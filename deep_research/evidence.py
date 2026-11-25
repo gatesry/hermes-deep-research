@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import re
+from decimal import Decimal
 from typing import Any
 
 MIN_QUOTE_CHARS = 20
@@ -40,10 +41,9 @@ def _is_number(value: Any) -> bool:
 
 
 def _decimals(value: float) -> int:
-    text = repr(float(value))
-    if "e" in text or "E" in text:
-        return 0
-    return len(text.split(".")[1].rstrip("0")) if "." in text else 0
+    """Decimal places as printed, e.g. 0.33 -> 2, 1.5e-05 -> 6, 2e+20 -> 0."""
+    exponent = Decimal(repr(float(value))).normalize().as_tuple().exponent
+    return max(0, -exponent) if isinstance(exponent, int) else 0
 
 
 def _matches(value: float, expected: float) -> bool:
@@ -51,7 +51,9 @@ def _matches(value: float, expected: float) -> bool:
         return True
     # Accept the rounding the model printed (half a unit in its last decimal, max 6).
     places = _decimals(value)
-    return places <= 6 and abs(value - expected) <= 0.5 * 10 ** (-places) + 1e-12
+    if places > 6 or abs(value) >= 1e15:  # beyond printed-rounding territory; demand the exact match above
+        return False
+    return abs(value - expected) <= 0.5 * 10 ** (-places) + 1e-12
 
 
 def calculation_problem(calc: dict, evidence: list[dict]) -> str | None:
@@ -126,7 +128,13 @@ def plain(value: Any, limit: int = 1000) -> str:
     return collapse(str(value))[:limit]
 
 
-_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]<>|#!])")
+_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]<>|#!~])")
+
+
+def autolink(url: str) -> str:
+    """A CommonMark autolink: no escapes inside, so percent-encode what could end or break it."""
+    safe = re.sub(r"[\x00-\x20<>\x7f]", lambda m: "%{:02X}".format(ord(m.group())), str(url)[:2048])
+    return f"<{safe}>"
 
 
 def md(value: Any, limit: int = 1000) -> str:
@@ -181,7 +189,7 @@ def render_report(question: str, findings: list[dict], sources: list[dict], gaps
     parts.append("\n".join(f"- {md(g)}" for g in gaps) if gaps else "- None recorded.")
     parts.append("\n\n## Sources")
     for s in sources:
-        where = f" — {md(s['url'], 2048)}" if s.get("url") else " (supplied document)"
+        where = f" — {autolink(s['url'])}" if s.get("url") else " (supplied document)"
         parts.append(f"\n- [{s['id']}] {md(s['title'], 256)}{where}")
     parts.append("\n\n---\n" + VERIFIED_NOTE)
     return {"report": "".join(parts) + "\n", "citations": citations}

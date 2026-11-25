@@ -17,6 +17,17 @@ _FOOTER = re.compile(r"\s*\n─{8} \[TRUNCATED\] ─{8}.*\Z", re.S)
 _OMITTED = "\n\n[... middle omitted — see footer ...]\n\n"
 
 
+class PageUnavailable(RuntimeError):
+    """The tool worked but this one page could not be read."""
+
+
+def _reason(value) -> str:
+    """A short, path-free version of a Hermes error message, safe to show in a report."""
+    text = " ".join(str(value or "").split())
+    text = re.sub(r"(?:~|[A-Za-z]:)?(?:[\\/][\w.@~-]+){2,}[\\/]?", "<path>", text)
+    return text[:200]
+
+
 class ToolUnavailable(RuntimeError):
     pass
 
@@ -54,7 +65,8 @@ class HermesIO:
         if not isinstance(data, dict):
             raise ToolUnavailable(f"{name} returned an unexpected shape")
         if data.get("error") and not data.get("results") and not data.get("data"):
-            raise ToolUnavailable(f"{name} failed")
+            reason = _reason(data.get("error"))
+            raise ToolUnavailable(f"{name} failed: {reason}" if reason else f"{name} failed")
         return data
 
     def search(self, query: str) -> list[dict]:
@@ -68,9 +80,9 @@ class HermesIO:
         data = self._dispatch("web_extract", {"urls": [url], "char_limit": PAGE_MAX_CHARS})
         results = data.get("results") or []
         if not results or not isinstance(results[0], dict):
-            raise ToolUnavailable("web_extract returned no result")
+            raise PageUnavailable("web_extract returned no result")
         page = results[0]
         if page.get("error"):
-            raise ToolUnavailable("web_extract could not read the page")
+            raise PageUnavailable("web_extract could not read the page")
         return {"url": page.get("final_url") or page.get("url") or url, "title": page.get("title") or url,
                 "text": clean_extract(page.get("content") or "")}

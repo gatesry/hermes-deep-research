@@ -27,7 +27,7 @@ from .contract import (
     domain_allowed,
     url_key,
 )
-from .evidence import evidence_problem, finding_key, plain, render_report
+from .evidence import collapse, evidence_problem, finding_key, plain, render_report
 
 MAX_FINDINGS = 12
 MAX_ROUNDS = 3
@@ -96,6 +96,21 @@ def _strings(value: Any, limit: int, max_len: int = 1000) -> list[str]:
     return out[:limit]
 
 
+_CALC_KEYS = ("operation", "value", "unit", "asOf")
+_INPUT_KEYS = ("value", "unit", "asOf", "sourceId", "quote")
+
+
+def _calculation_fields(calc: Any) -> Any:
+    """Keep only the fields the checker reads, so stray model keys never reach stored results."""
+    if not isinstance(calc, dict):
+        return calc
+    out = {k: calc[k] for k in _CALC_KEYS if k in calc}
+    inputs = calc.get("inputs")
+    out["inputs"] = [{k: i[k] for k in _INPUT_KEYS if k in i} if isinstance(i, dict) else i
+                     for i in inputs] if isinstance(inputs, list) else inputs
+    return out
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -127,6 +142,7 @@ class Engine:
         self.seen_queries: set[str] = set()
         self._charged: set[str] = set()  # each receipt is charged once per execution, live or replayed
         self._corpus_full_noted = False
+        self._extract_down: str | None = None  # set once web_extract itself reports it cannot work
         self._lock = threading.Lock()
 
     # ---- effects ------------------------------------------------------
@@ -201,7 +217,7 @@ class Engine:
             if audit:
                 self.audit_route = reply["model"]
             else:
-                self.route = {"model": reply["model"], "runtime": "direct-provider"}
+                self.route = {"model": reply["model"], "runtime": "hermes"}
         try:
             parsed = parse_json(reply["text"])
         except (ValueError, json.JSONDecodeError):
@@ -252,6 +268,11 @@ class Engine:
         except StepNotRepeated as exc:
             return None, f"Source not re-fetched: {url} ({exc})"
         except Exception as exc:
+            if type(exc).__name__ == "ToolUnavailable":  # the extractor is down, not just this page
+                with self._lock:
+                    first = self._extract_down is None
+                    self._extract_down = self._extract_down or plain(str(exc), 240)
+                return None, (f"Page fetching stopped: {self._extract_down}" if first else None)
             return None, f"Source unavailable: {url} ({type(exc).__name__})"
         if not domain_allowed(page["url"], sources["allowDomains"], sources["denyDomains"]):
             return None, f"Excluded redirected source: {url}"
@@ -261,24 +282,33 @@ class Engine:
 
     def _gather(self, urls: list[str]) -> None:
         sources = self.request["sources"]
+        supplied = {url_key(u) for u in sources["urls"]}
         picked: list[str] = []
         for raw in urls:
             url, key = canonical_url(raw), url_key(raw)
             if url is None or key in self.seen_urls or key not in self.fetchable:
                 continue
-            if not domain_allowed(url, sources["allowDomains"], sources["denyDomains"]):
-                continue
             self.seen_urls.add(key)
+            if not domain_allowed(url, sources["allowDomains"], sources["denyDomains"]):
+                if key in supplied:
+                    self.gaps.append(f"Supplied URL excluded by domain filters: {url}")
+                continue
             picked.append(url)
         # Selection order is fixed before fetching, so source IDs never depend on network timing.
-        picked = picked[: max(0, self.budget.remaining("fetches"))]
+        room = max(0, self.budget.remaining("fetches"))
+        if self._extract_down:
+            room = 0
+        for url in picked[room:]:
+            if url_key(url) in supplied:
+                self.gaps.append(f"Supplied URL not fetched (fetch budget or page fetching unavailable): {url}")
+        picked = picked[:room]
         workers = max(1, min(self.request["budget"]["parallelism"], len(picked) or 1))
         # Fetch in batches of `workers` and stop once the corpus is full, so the fetch budget isn't
         # spent on pages that could not be kept. Each worker runs in a copy of this thread's
         # context, which carries the caller's Hermes profile into web_extract.
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="deep-research-fetch") as pool:
             for start in range(0, len(picked), workers):
-                if self.corpus_bytes >= CORPUS_MAX_BYTES:
+                if self.corpus_bytes >= CORPUS_MAX_BYTES or self._extract_down:
                     break
                 batch = picked[start:start + workers]
                 futures = [pool.submit(contextvars.copy_context().run, self._fetch, url) for url in batch]
@@ -303,7 +333,8 @@ class Engine:
             return
         urls: list[str] = []
         for query in queries:
-            if query in self.seen_queries or self.budget.remaining("searches") <= 0:
+            query = collapse(query).lower()
+            if not query or query in self.seen_queries or self.budget.remaining("searches") <= 0:
                 continue
             self.seen_queries.add(query)
             try:
@@ -362,7 +393,8 @@ class Engine:
             "without this ledger. Return no queries when the evidence already answers the question; otherwise "
             "make each query narrower than the last round's and aimed at one listed gap.",
             {"question": req["question"], "asOf": req.get("asOf") or "unspecified",
-             "output": req.get("output") or "source-backed findings", "sources": self._corpus()},
+             "output": req.get("output") or "source-backed findings", "sources": self._corpus(),
+             "priorQueries": sorted(self.seen_queries)},
         )
         return self._model("extract", prompt)
 
@@ -429,7 +461,7 @@ class Engine:
                     candidate = {"statement": plain(raw["statement"]), "evidence": raw.get("evidence"),
                                  "support": "quote-matched"}
                     if raw.get("calculation") is not None:
-                        candidate["calculation"] = raw["calculation"]
+                        candidate["calculation"] = _calculation_fields(raw["calculation"])
                     key = finding_key(candidate["statement"])
                     problem = evidence_problem(candidate, self.sources)
                     if problem:
@@ -469,8 +501,8 @@ class Engine:
                     disagreements = _strings(audit.get("disagreements"), 8)
                 if not round_gaps or not req["sources"]["web"] or not queries or round_no == MAX_ROUNDS - 1:
                     break
-                if self.budget.remaining("searches") <= 0 or self.budget.remaining("modelCalls") <= 0:
-                    break
+                if self.budget.remaining("searches") <= 0 or self.budget.remaining("modelCalls") < 2:
+                    break  # another round needs a search plus an extract and an audit call
         except Cancelled:
             status = "cancelled"
             self.gaps.append("Research cancelled.")

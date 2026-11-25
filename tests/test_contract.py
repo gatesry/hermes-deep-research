@@ -167,12 +167,6 @@ class BudgetTests(unittest.TestCase):
             b.admit("fetches")
         self.assertEqual(b.used["fetches"], 0)
 
-    def test_restored_usage_counts(self):
-        b = self.budget()
-        b.restore({"modelCalls": 2, "searches": 0, "fetches": 1})
-        with self.assertRaises(BudgetExhausted):
-            b.admit("modelCalls")
-
     def test_threaded_admission_never_overshoots(self):
         b = self.budget(fetches=40)
         admitted = []

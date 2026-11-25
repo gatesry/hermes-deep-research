@@ -4,8 +4,8 @@ import time
 import unittest
 
 from deep_research.contract import Budget, normalize_request
-from deep_research.engine import Engine
-from tests.fakes import PAGE_A, FakeIO, MemorySteps
+from deep_research.engine import UNTRUSTED_MARKER, Engine
+from tests.fakes import PAGE_A, PAGE_B, FakeIO, MemorySteps
 
 
 def run(request, io=None, steps=None, replay_only=None, deadline_in=60.0, cancelled=lambda: False):
@@ -308,3 +308,65 @@ class ReviewFixTests(unittest.TestCase):
         io = FakeIO()
         run({"question": "How many widgets?", "sources": {"documents": [{"title": "Report A", "text": PAGE_A}]}}, io=io)
         self.assertNotIn("plan", [kind for kind, _ in io.prompts])
+
+
+class AntigravityFixTests(unittest.TestCase):
+    def test_quick_preset_finishes_without_a_budget_error(self):
+        io = FakeIO(extraction={"findings": [], "gaps": ["more"], "queries": ["widget sales by region 2025"]},
+                    hits=[{"url": "https://a.example/report", "title": "A"}, {"url": "https://b.example/review", "title": "B"}])
+        result, _, _ = run({"question": "How many widgets?", "depth": "quick"}, io=io)
+        self.assertFalse([g for g in result["gaps"] if "cannot fund" in g or "budget exhausted" in g], result["gaps"])
+
+    def test_dropped_caller_urls_are_reported(self):
+        pages = {"https://a.example/report": ("A", PAGE_A), "https://b.example/review": ("B", PAGE_B),
+                 "https://blocked.example/x": ("X", PAGE_B)}
+        result, _, _ = run({"question": "q", "sources": {"web": False, "denyDomains": ["blocked.example"],
+                            "urls": list(pages)}, "budget": {"fetches": 1}}, io=FakeIO(pages=pages))
+        gaps = " | ".join(result["gaps"])
+        self.assertIn("https://blocked.example/x", gaps)
+        self.assertIn("https://b.example/review", gaps)
+        self.assertEqual(result["status"], "partial")
+
+    def test_follow_up_prompt_lists_prior_queries_and_dedups_variants(self):
+        io = FakeIO(extraction={"findings": [], "gaps": ["more"], "queries": ["  Widget SALES 2025 ", "regional split"]},
+                    hits=[{"url": "https://a.example/report", "title": "A"}])
+        searched = []
+        original = io.search
+        io.search = lambda q: (searched.append(q), original(q))[1]
+        run({"question": "How many widgets?"}, io=io)
+        self.assertEqual(searched, ["widget sales 2025", "regional split"])
+        extract_prompts = [p for kind, p in io.prompts if kind == "extract"]
+        data = json.loads(extract_prompts[0].split(UNTRUSTED_MARKER, 1)[1])
+        self.assertEqual(data["priorQueries"], ["widget sales 2025"])
+
+    def test_extract_backend_failure_stops_fetching_with_its_reason(self):
+        from deep_research.adapters import ToolUnavailable
+        io = FakeIO()
+
+        def down(url):
+            io._count("fetch")
+            raise ToolUnavailable("web_extract failed: ddgs is a search-only backend. Set web.extract_backend.")
+
+        io.fetch = down
+        result, _, _ = run({"question": "q", "budget": {"parallelism": 1}}, io=io)
+        self.assertEqual(io.calls["fetch"], 1)
+        reason = [g for g in result["gaps"] if "search-only backend" in g]
+        self.assertEqual(len(reason), 1)
+
+    def test_calculation_keeps_only_known_fields(self):
+        q1 = "In 2025 the company sold 1,200 widgets in total"
+        calc = {"operation": "sum", "value": 2400, "unit": "widgets", "asOf": "2025", "evil": "<script>",
+                "inputs": [{"value": 1200, "unit": "widgets", "asOf": "2025", "sourceId": "S1", "quote": q1, "x": 1},
+                           {"value": 1200, "unit": "widgets", "asOf": "2025", "sourceId": "S1", "quote": q1}]}
+        extraction = {"findings": [{"statement": "Twice 2025 sales is 2,400.", "evidence": [{"sourceId": "S1", "quote": q1}],
+                       "calculation": calc}], "gaps": [], "queries": []}
+        result, _, _ = run({"question": "q", "sources": {"documents": [{"title": "Report A", "text": PAGE_A}]}},
+                           io=FakeIO(extraction=extraction))
+        self.assertEqual(len(result["findings"]), 1)
+        stored = result["findings"][0]["calculation"]
+        self.assertNotIn("evil", stored)
+        self.assertNotIn("x", stored["inputs"][0])
+
+    def test_route_names_hermes_not_a_direct_provider(self):
+        result, _, _ = run({"question": "How many widgets?"})
+        self.assertEqual(result["route"]["runtime"], "hermes")

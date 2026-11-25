@@ -14,8 +14,11 @@ PLUGIN_NAME = "deep-research"
 
 
 def _int_setting(ctx, key: str, default: int, low: int, high: int) -> int:
+    raw = ctx.get_config(key, default)
+    if isinstance(raw, bool):  # int(True) == 1 would silently mean something else
+        return default
     try:
-        value = int(ctx.get_config(key, default))
+        value = int(raw)
     except (TypeError, ValueError):
         return default
     return max(low, min(high, value))

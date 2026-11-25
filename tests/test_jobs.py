@@ -281,3 +281,69 @@ class AdmissionRaceTests(JobTestBase):
         self.start()
         self.manager.shutdown(10)
         self.assertEqual(self.manager._threads, {})
+
+
+class LifecycleTests(JobTestBase):
+    def test_shutdown_pauses_running_jobs_so_they_can_resume(self):
+        gate = threading.Event()
+        manager = self.make_manager(io=FakeIO(fetch_gate=gate), foreground_wait=0)
+        job = manager.start("conv-1", "k1", normalize_request({"question": "How many widgets?"}))
+        stopper = threading.Thread(target=manager.shutdown, args=(10,))
+        stopper.start()
+        time.sleep(0.1)
+        gate.set()
+        stopper.join(10)
+        fresh = self.make_manager(foreground_wait=10)
+        stored = fresh.store.get_job(job["id"])
+        self.assertEqual(stored["state"], "paused")
+        self.assertIsNone(stored["result"])
+        resumed = fresh.resume("conv-1", job["id"])
+        self.assertIn(resumed["state"], ("completed", "partial"))
+
+    def test_heartbeat_survives_a_transient_database_error(self):
+        import deep_research.jobs as jobs_module
+        gate = threading.Event()
+        manager = self.make_manager(io=FakeIO(fetch_gate=gate), foreground_wait=0)
+        beats = []
+        original = manager.store.heartbeat
+
+        def flaky(job_id, now):
+            beats.append(now)
+            if len(beats) == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return original(job_id, now)
+
+        manager.store.heartbeat = flaky
+        old = jobs_module.HEARTBEAT_SECONDS
+        jobs_module.HEARTBEAT_SECONDS = 0.02
+        try:
+            manager.start("conv-1", "k1", normalize_request({"question": "How many widgets?"}))
+            give_up = time.monotonic() + 3
+            while len(beats) < 3 and time.monotonic() < give_up:
+                time.sleep(0.02)
+        finally:
+            gate.set()
+            jobs_module.HEARTBEAT_SECONDS = old
+        self.assertGreater(len(beats), 2)
+
+    def test_cancel_returns_promptly(self):
+        gate = threading.Event()
+        manager = self.make_manager(io=FakeIO(fetch_gate=gate), foreground_wait=300)
+        manager.cancel_wait = 0.2
+        manager.foreground_wait = 0
+        job = manager.start("conv-1", "k1", normalize_request({"question": "How many widgets?"}))
+        manager.foreground_wait = 300
+        began = time.monotonic()
+        manager.cancel("conv-1", job["id"])
+        self.assertLess(time.monotonic() - began, 3)
+        gate.set()
+
+    def test_finished_jobs_drop_their_receipts(self):
+        job = self.start()
+        self.assertIn(job["state"], ("completed", "partial"))
+        self.assertEqual(self.manager.store.count_steps(job["id"]), 0)
+        # The stored result still reads back identically.
+        a = handle(self.manager, {"action": "result", "jobId": job["id"]}, conversation_id="conv-1")
+        b = handle(self.manager, {"action": "result", "jobId": job["id"]}, conversation_id="conv-1")
+        self.assertEqual(a, b)
+        self.assertIn('"result":', a)

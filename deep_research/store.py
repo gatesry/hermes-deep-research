@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     heartbeat_at REAL
 );
 CREATE INDEX IF NOT EXISTS jobs_conversation ON jobs(conversation);
+CREATE INDEX IF NOT EXISTS jobs_updated ON jobs(updated_at);
 CREATE TABLE IF NOT EXISTS steps (
     job_id TEXT NOT NULL,
     step_id TEXT NOT NULL,
@@ -34,7 +35,6 @@ CREATE TABLE IF NOT EXISTS steps (
 );
 """
 
-LIVE_STATES = ("queued", "running")
 TERMINAL_STATES = ("completed", "partial", "cancelled", "failed", "indeterminate")
 
 
@@ -94,9 +94,6 @@ class Store:
     def count_jobs(self, conversation: str) -> int:
         return self._one("SELECT COUNT(*) FROM jobs WHERE conversation = ?", (conversation,))[0]
 
-    def count_live(self, fresh_after: float) -> int:
-        return self._one("SELECT COUNT(*) FROM jobs WHERE state = 'running' AND heartbeat_at >= ?", (fresh_after,))[0]
-
     def prune(self, cutoff: float) -> None:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM steps WHERE job_id IN (SELECT id FROM jobs WHERE updated_at < ?)", (cutoff,))
@@ -136,9 +133,20 @@ class Store:
 
     def finish(self, job_id: str, state: str, progress: str, result_json: str, usage: dict, now: float) -> None:
         # The stored result is immutable: later writes never replace it.
-        self._exec(
-            "UPDATE jobs SET state = ?, progress = ?, result = ?, usage = ?, updated_at = ? WHERE id = ? AND result IS NULL",
-            (state, progress, result_json, json.dumps(usage, sort_keys=True), now, job_id))
+        # Receipts exist only for resume; a finished job can't resume, so they go in the same transaction.
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE jobs SET state = ?, progress = ?, result = ?, usage = ?, updated_at = ? WHERE id = ? AND result IS NULL",
+                (state, progress, result_json, json.dumps(usage, sort_keys=True), now, job_id))
+            self._conn.execute("DELETE FROM steps WHERE job_id = ?", (job_id,))
+
+    def pause(self, job_id: str, progress: str, now: float) -> None:
+        self._exec("UPDATE jobs SET state = 'paused', progress = ?, updated_at = ? WHERE id = ? AND state = 'running'",
+                   (progress, now, job_id))
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
 
     def fail(self, job_id: str, progress: str, now: float) -> None:
         self._exec("UPDATE jobs SET state = 'failed', progress = ?, updated_at = ? WHERE id = ? AND result IS NULL",

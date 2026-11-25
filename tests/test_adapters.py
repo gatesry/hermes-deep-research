@@ -85,7 +85,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_fetch_error_raises(self):
         ctx = FakeCtx({"web_extract": json.dumps({"results": [{"url": "u", "content": "", "error": "blocked"}]})})
-        with self.assertRaises(ToolUnavailable):
+        from deep_research.adapters import PageUnavailable
+        with self.assertRaises(PageUnavailable):  # one page failed; the extractor itself still works
             HermesIO(ctx).fetch("u")
 
     def test_clean_extract_leaves_normal_text(self):
@@ -134,3 +135,28 @@ class RegistrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdapterReviewFixTests(unittest.TestCase):
+    def test_tool_level_failure_keeps_a_short_reason(self):
+        from deep_research.adapters import HermesIO, PageUnavailable, ToolUnavailable
+        ctx = FakeCtx({"web_extract": json.dumps({"success": False,
+                       "error": "ddgs is a search-only backend; see /Users/someone/.hermes/config.yaml"})})
+        with self.assertRaises(ToolUnavailable) as caught:
+            HermesIO(ctx).fetch("https://a.example/")
+        self.assertIn("search-only backend", str(caught.exception))
+        self.assertNotIn("/Users/someone", str(caught.exception))
+        ctx = FakeCtx({"web_extract": json.dumps({"results": [{"url": "https://a.example/", "error": "404"}]})})
+        with self.assertRaises(PageUnavailable):
+            HermesIO(ctx).fetch("https://a.example/")
+
+    def test_schema_accepts_what_the_contract_accepts(self):
+        from deep_research.tool import SCHEMA
+        props = SCHEMA["parameters"]["properties"]["request"]["properties"]
+        self.assertIn("engine", props)
+
+    def test_boolean_settings_fall_back_to_defaults(self):
+        module = RegistrationTests.load_plugin(self)
+        ctx = FakeCtx()
+        ctx.settings = {"max_active_jobs": True}
+        self.assertEqual(module._int_setting(ctx, "max_active_jobs", 4, 1, 16), 4)

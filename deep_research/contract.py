@@ -232,11 +232,6 @@ class Budget:
         self.clock = clock
         self._lock = threading.Lock()
 
-    def restore(self, used: dict) -> None:
-        with self._lock:
-            for k in COUNTERS:
-                self.used[k] = int(used.get(k, 0))
-
     def time_left(self) -> float:
         return self.deadline_at - self.clock()
 

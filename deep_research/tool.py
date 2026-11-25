@@ -69,6 +69,8 @@ SCHEMA = {
                             },
                         },
                     },
+                    "engine": {"type": "string", "enum": ["portable"],
+                               "description": "Only the portable engine is available."},
                     "depth": {"type": "string", "enum": list(DEPTH_PRESETS),
                               "description": "Effort preset (default standard); explicit budget keys override it."},
                     "budget": {"type": "object", "additionalProperties": False, "properties": _BUDGET_PROPS},

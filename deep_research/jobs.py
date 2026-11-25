@@ -36,7 +36,9 @@ class JobManager:
         self._threads: dict[str, threading.Thread] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
-        self._admit = threading.Lock()  # serialises capacity checks with the launch they guard
+        self._admit = threading.Lock()
+        self._stopping = threading.Event()  # unload/reload: pause runners, don't cancel them
+        self.cancel_wait = 5.0  # cancel answers quickly; the job settles in the background  # serialises capacity checks with the launch they guard
         self._last_prune = float("-inf")
 
     # ---- identity and views -------------------------------------------
@@ -111,6 +113,7 @@ class JobManager:
         if existing:
             return self._same_request(existing, canonical)
         with self._admit:
+            self._refuse_if_stopping()
             if self._active_count() >= self.max_active:
                 raise ContractError(f"{self.max_active} research jobs are already running; try again when one finishes.")
             outcome = self.store.insert_job_if_room(job_id, conversation, key, canonical, self.clock(),
@@ -133,6 +136,7 @@ class JobManager:
         elif job["deadline_at"] is not None and self.clock() >= job["deadline_at"]:
             replay = "deadline"
         with self._admit:
+            self._refuse_if_stopping()
             if self._active_count() >= self.max_active:
                 raise ContractError(f"{self.max_active} research jobs are already running; try again when one finishes.")
             self._launch(job_id, replay_only=replay)
@@ -149,7 +153,7 @@ class JobManager:
         if not self._alive(job_id) and job["state"] != "running":
             # Paused or never started: replay recorded receipts only, then settle as cancelled.
             self._launch(job_id, replay_only="cancelled")
-        return self.wait(job_id, self.foreground_wait if wait is None else wait)
+        return self.wait(job_id, min(self.foreground_wait, self.cancel_wait) if wait is None else wait)
 
     def wait(self, job_id: str, timeout: float) -> dict:
         thread = self._threads.get(job_id)
@@ -161,8 +165,9 @@ class JobManager:
         return self._view(job)
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        """Signal every local runner to stop at its next admission and wait briefly.
-        Stopped jobs are left as they are; unfinished ones show as paused once stale."""
+        """Plugin unload: stop every local runner at its next call, record its job as paused (resumable,
+        receipts kept), and close the database once no runner still needs it."""
+        self._stopping.set()
         with self._lock:
             events = list(self._cancel_events.values())
             threads = list(self._threads.values())
@@ -171,6 +176,12 @@ class JobManager:
         deadline = time.monotonic() + timeout
         for thread in threads:
             thread.join(max(0.0, deadline - time.monotonic()))
+        if not any(t.is_alive() for t in threads):
+            self.store.close()
+
+    def _refuse_if_stopping(self) -> None:
+        if self._stopping.is_set():
+            raise ContractError("The deep-research plugin is unloading; try again in a moment.")
 
     # ---- runner -------------------------------------------------------
     def _launch(self, job_id: str, replay_only: str | None) -> None:
@@ -194,7 +205,10 @@ class JobManager:
 
         def beat():
             while not stop.wait(HEARTBEAT_SECONDS):
-                self.store.heartbeat(job_id, self.clock())
+                try:
+                    self.store.heartbeat(job_id, self.clock())
+                except Exception:  # noqa: BLE001 - a busy database must not end the heartbeat
+                    continue
 
         threading.Thread(target=beat, name=f"deep-research-beat-{job_id[:11]}", daemon=True).start()
         try:
@@ -210,6 +224,9 @@ class JobManager:
                 progress=lambda msg, usage: self.store.update_progress(job_id, msg, usage, self.clock()),
             )
             result = engine.run()
+            if self._stopping.is_set() and not self.store.is_cancel_requested(job_id):
+                self.store.pause(job_id, "Paused: the plugin was unloaded. Use resume to continue.", self.clock())
+                return
             state = "indeterminate" if engine.uncertain else result["status"]
             progress = {
                 "completed": "Completed",

@@ -18,4 +18,8 @@ First release.
   idempotency checks are race-free; plugin unload stops running jobs; malformed model output becomes
   gaps instead of failing the job; fetching stops when the corpus is full; repeated receipts count
   once; document-only jobs skip planning; supplied documents never feed follow-up searches.
+- Unloading the plugin pauses running jobs (resumable) instead of cancelling them; `cancel`
+  returns within about 5 s; finished jobs drop their resume receipts; dropped supplied URLs and a
+  failing extract backend are reported as gaps; follow-up prompts list earlier queries.
+- CI actions pinned to commit SHAs with a 10-minute timeout.
 - Report footer states that verified is not proof of truth; no confidence scores.

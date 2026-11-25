@@ -189,3 +189,24 @@ class RenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFixEvidenceTests(unittest.TestCase):
+    def test_scientific_notation_does_not_widen_rounding(self):
+        from deep_research.evidence import _matches
+        self.assertFalse(_matches(1e-5, -0.49))
+        self.assertFalse(_matches(2e20, 1e20))
+        self.assertTrue(_matches(1.5e-5, 1.5e-5))
+        self.assertTrue(_matches(0.33, 1 / 3))
+
+    def test_tilde_is_escaped_and_source_urls_stay_usable(self):
+        sources = [{"id": "S1", "title": "~~struck~~", "url": "https://a.example/x_y?q=1&r=2#frag",
+                    "text": Q_2024 + " padding text"}]
+        report = render_report("q", [], sources, [])["report"]
+        self.assertIn("\\~\\~struck\\~\\~", report)
+        self.assertIn("<https://a.example/x_y?q=1&r=2#frag>", report)
+
+    def test_source_urls_cannot_break_out_of_the_autolink(self):
+        sources = [{"id": "S1", "title": "t", "url": "https://a.example/a>b c<d", "text": Q_2024}]
+        report = render_report("q", [], sources, [])["report"]
+        self.assertIn("<https://a.example/a%3Eb%20c%3Cd>", report)

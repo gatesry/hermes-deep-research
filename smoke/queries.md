@@ -9,7 +9,7 @@ listed under Disagreements, and are gaps honest? This is not run in CI and has n
 | 1 | What is the current stable Python release and when was it released? | python.org release pages |
 | 2 | What changed in the latest SQLite release? | sqlite.org release log |
 | 3 | What is the population of Canada according to the most recent official estimate? | Statistics Canada |
-| 4 | By what percentage did global average CO2 concentration change between 2015 and 2025? | NOAA / Mauna Loa data; checked percent-change |
+| 4 | By what percentage did global average CO2 concentration change between 2015 and 2025? | NOAA / Mauna Loa data; both figures cited, change listed under Unresolved (inputs have different dates, so no checked calculation) |
 | 5 | What are the licence terms of the Linux kernel? | kernel.org COPYING |
 | 6 | Which HTTP status code means "Too Many Requests", and which RFC defines it? | RFC 6585 |
 | 7 | What is the boiling point of water at the summit of Mount Everest? | physics references; note assumptions |
@@ -17,7 +17,7 @@ listed under Disagreements, and are gaps honest? This is not run in CI and has n
 | 9 | What is the current recommended adult daily vitamin D intake in the US? | NIH Office of Dietary Supplements |
 | 10 | Is coffee consumption associated with lower or higher all-cause mortality? | systematic reviews; Disagreements expected |
 | 11 | What were Apple's total net sales in its most recent fiscal year? | Form 10-K |
-| 12 | How did the US unemployment rate change over the last 12 months? | BLS; checked difference |
+| 12 | In the latest BLS release, how many percentage points apart are the US unemployment rates for men and women aged 20+? | BLS; checked difference (same release date) |
 | 13 | What is the TLS 1.3 handshake round-trip count compared with TLS 1.2? | RFC 8446 |
 | 14 | When does the next total solar eclipse visible from Europe occur? | NASA eclipse pages |
 | 15 | What are the main differences between the GPLv2 and GPLv3 licences? | gnu.org |

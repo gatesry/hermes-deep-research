@@ -16,7 +16,9 @@ It is a Python port of the portable engine in
 3. **Extracts** atomic findings, each tied to verbatim quotes from the fetched text.
 4. **Checks mechanically**: every quote must appear in its source (at least 20 non-space characters),
    and any derived number (sum, difference, ratio, percent change) must be recomputed from two quoted
-   inputs with matching units and dates.
+   inputs with the same unit and the same date. As in OpenClaw, a change *between* two dates (say
+   2015 to 2025) is not mechanically checked: both figures are cited and the change is listed as
+   unresolved.
 5. **Audits** the surviving findings in a separate model pass for semantic support, contradictions,
    units and dates.
 6. **Repeats** up to three rounds while gaps remain and budget allows, then renders a Markdown report.
@@ -51,7 +53,7 @@ The tool contract:
 | `status` | `jobId` | State, progress, usage |
 | `result` | `jobId` | Full result: report, citations, findings, sources with text, gaps, disagreements, usage |
 | `resume` | `jobId` | Continues a paused job from its recorded receipts |
-| `cancel` | `jobId` | Stops at the next call boundary |
+| `cancel` | `jobId` | Returns within about 5 s; the job stops at its next call boundary |
 | `capabilities` | — | Engines, budget defaults/maximums, depth presets, limits |
 
 `request` fields: `question` (required, ≤8,000 chars), `output` (what to focus on), `asOf` (date the
@@ -158,7 +160,8 @@ correct or that the research is complete.
   After the deadline, or after `cancel`, resume replays receipts only and makes no new calls.
 - **Additions:** `depth` presets, a Disagreements section, a fetch-origin rule, IDNA host
   normalisation, URL canonicalisation before dedup, a render-time citation check, and a
-  "verified is not true" footer.
+  "verified is not true" footer. Jobs that only read supplied material skip the planning call,
+  and supplied documents never feed model-written follow-up searches.
 - **Search snippets are never evidence**, as in OpenClaw; only fetched page text is.
 
 ## Development
