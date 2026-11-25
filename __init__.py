@@ -43,6 +43,13 @@ def register(ctx) -> None:
                 )
             return state["manager"]
 
+    def shutdown():
+        # Unload/reload/disable: stop local runners cooperatively. Never opens storage itself.
+        with lock:
+            current = state.get("manager")
+        if current is not None:
+            current.shutdown()
+
     def deep_research(args, conversation_id=None, session_id=None):
         return handle(manager, args, conversation_id=conversation_id, session_id=session_id)
 
@@ -59,3 +66,5 @@ def register(ctx) -> None:
         description=SCHEMA["description"],
         emoji="🔎",
     )
+    if hasattr(ctx, "on_unload"):  # older Hermes releases have no unload hook
+        ctx.on_unload(shutdown)

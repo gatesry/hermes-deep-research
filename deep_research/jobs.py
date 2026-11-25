@@ -18,6 +18,7 @@ MAX_JOBS_PER_CONVERSATION = 32
 RETENTION_SECONDS = 7 * 86400
 HEARTBEAT_SECONDS = 10.0
 STALE_SECONDS = 60.0
+PRUNE_EVERY_SECONDS = 60.0
 
 
 def _iso(ts: float) -> str:
@@ -35,6 +36,8 @@ class JobManager:
         self._threads: dict[str, threading.Thread] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
+        self._admit = threading.Lock()  # serialises capacity checks with the launch they guard
+        self._last_prune = float("-inf")
 
     # ---- identity and views -------------------------------------------
     @staticmethod
@@ -72,8 +75,21 @@ class JobManager:
             view["result"] = json.loads(job["result"])
         return view
 
+    def _prune(self) -> None:
+        now = self.clock()
+        if now - self._last_prune >= PRUNE_EVERY_SECONDS:
+            self._last_prune = now
+            self.store.prune(now - RETENTION_SECONDS)
+
+    def _same_request(self, job: dict | None, canonical: str) -> dict:
+        if job is None:
+            raise ContractError("unknown jobId for this conversation")
+        if job["request"] != canonical:
+            raise ContractError("idempotencyKey was already used with a different request")
+        return self._view(self._refresh(job))
+
     def _load(self, conversation: str, job_id: str) -> dict:
-        self.store.prune(self.clock() - RETENTION_SECONDS)
+        self._prune()
         job = self.store.get_job(job_id)
         if not job or job["conversation"] != conversation:
             raise ContractError("unknown jobId for this conversation")
@@ -88,37 +104,38 @@ class JobManager:
         return job, job["result"]
 
     def start(self, conversation: str, key: str, request: dict) -> dict:
-        now = self.clock()
-        self.store.prune(now - RETENTION_SECONDS)
+        self._prune()
         job_id = self.job_id(conversation, key)
         canonical = canonical_request(request)
         existing = self.store.get_job(job_id)
         if existing:
-            if existing["request"] != canonical:
-                raise ContractError("idempotencyKey was already used with a different request")
-            return self._view(self._refresh(existing))
-        if self.store.count_jobs(conversation) >= MAX_JOBS_PER_CONVERSATION:
-            raise ContractError(f"This conversation already keeps {MAX_JOBS_PER_CONVERSATION} research jobs; "
-                                "older ones expire 7 days after their last update.")
-        if self._active_count() >= self.max_active:
-            raise ContractError(f"{self.max_active} research jobs are already running; try again when one finishes.")
-        if not self.store.insert_job(job_id, conversation, key, canonical, now):
-            return self._view(self._refresh(self.store.get_job(job_id)))
-        self._launch(job_id, replay_only=None)
+            return self._same_request(existing, canonical)
+        with self._admit:
+            if self._active_count() >= self.max_active:
+                raise ContractError(f"{self.max_active} research jobs are already running; try again when one finishes.")
+            outcome = self.store.insert_job_if_room(job_id, conversation, key, canonical, self.clock(),
+                                                    MAX_JOBS_PER_CONVERSATION)
+            if outcome == "exists":  # another caller won the race; it must have sent the same request
+                return self._same_request(self.store.get_job(job_id), canonical)
+            if outcome == "full":
+                raise ContractError(f"This conversation already keeps {MAX_JOBS_PER_CONVERSATION} research jobs; "
+                                    "older ones expire 7 days after their last update.")
+            self._launch(job_id, replay_only=None)
         return self.wait(job_id, self.foreground_wait)
 
     def resume(self, conversation: str, job_id: str) -> dict:
         job = self._load(conversation, job_id)
         if job["state"] in TERMINAL_STATES or self._alive(job_id) or job["state"] == "running":
             return self._view(job)
-        if self._active_count() >= self.max_active:
-            raise ContractError(f"{self.max_active} research jobs are already running; try again when one finishes.")
         replay = None
         if self.store.is_cancel_requested(job_id):
             replay = "cancelled"
         elif job["deadline_at"] is not None and self.clock() >= job["deadline_at"]:
             replay = "deadline"
-        self._launch(job_id, replay_only=replay)
+        with self._admit:
+            if self._active_count() >= self.max_active:
+                raise ContractError(f"{self.max_active} research jobs are already running; try again when one finishes.")
+            self._launch(job_id, replay_only=replay)
         return self.wait(job_id, self.foreground_wait)
 
     def cancel(self, conversation: str, job_id: str, wait: float | None = None) -> dict:
@@ -208,3 +225,5 @@ class JobManager:
             stop.set()
             with self._lock:
                 self._cancel_events.pop(job_id, None)
+                if self._threads.get(job_id) is threading.current_thread():
+                    del self._threads[job_id]

@@ -63,6 +63,30 @@ class Store:
             (job_id, conversation, key, request_json, now, now))
         return cur.rowcount == 1
 
+    def insert_job_if_room(self, job_id: str, conversation: str, key: str, request_json: str, now: float,
+                           cap: int) -> str:
+        """Insert under one write transaction: "inserted", "exists" or "full". BEGIN IMMEDIATE takes
+        the write lock first, so managers sharing the database cannot both pass the quota check."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self._conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone():
+                    outcome = "exists"
+                elif self._conn.execute("SELECT COUNT(*) FROM jobs WHERE conversation = ?",
+                                        (conversation,)).fetchone()[0] >= cap:
+                    outcome = "full"
+                else:
+                    self._conn.execute(
+                        "INSERT INTO jobs (id, conversation, idempotency_key, request, state, progress, created_at,"
+                        " updated_at) VALUES (?, ?, ?, ?, 'queued', 'Queued', ?, ?)",
+                        (job_id, conversation, key, request_json, now, now))
+                    outcome = "inserted"
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            return outcome
+
     def get_job(self, job_id: str) -> dict | None:
         row = self._one("SELECT * FROM jobs WHERE id = ?", (job_id,))
         return dict(row) if row else None

@@ -64,17 +64,25 @@ expected to settle scope with you first.
 
 ### Budgets
 
-Model calls, searches and fetches share one budget per job, and there is one deadline. Replayed
-receipts count toward the budget too.
+Model calls, searches and fetches share one budget per job, and each receipt counts once, live or
+replayed.
 
 | Preset | Model calls | Searches | Fetches | Parallel fetches | Deadline |
 |---|---|---|---|---|---|
 | `quick` | 4 | 3 | 6 | 2 | 90 s |
 | `standard` (default) | 8 | 6 | 12 | 2 | 180 s |
-| `deep` | 20 | 14 | 30 | 4 | 600 s |
-| maximum | 30 | 20 | 40 | 4 | 900 s |
+| `deep` | 8 | 12 | 30 | 4 | 600 s |
+| maximum accepted | 30 | 20 | 40 | 4 | 900 s |
 
-Token counts are reported but are **not** a hard cap. A small `quick` job typically uses 3 model calls.
+A job runs at most three rounds: one planning call, then an extraction and an audit call per round,
+so it never uses more than 7 model calls. Higher model-call limits are accepted for compatibility
+with OpenClaw's contract but cannot be reached. A simple question usually needs 3 calls. Jobs that
+only read supplied documents or URLs (`web: false`) skip the planning call. A round whose
+follow-up searches find nothing new ends the job instead of repeating the last pass.
+
+The **deadline stops new calls**; it does not interrupt one already running. A model call, search or
+fetch in progress when the deadline passes finishes first, within Hermes' own timeouts, so a job
+can end somewhat after its deadline. Token counts are reported, but they are **not** a hard cap.
 
 ## Configuration
 
@@ -102,7 +110,9 @@ hermes plugins disable deep-research   # keeps the job database
 hermes plugins remove deep-research    # removes the plugin; plugin-data/deep-research stays until you delete it
 ```
 
-A tool that is already wired into a running gateway stays callable until the gateway restarts.
+Disabling, removing or reloading the plugin signals running jobs to stop at their next call; any
+call in progress finishes first. Stopped jobs show as `paused` and can be resumed after you
+re-enable the plugin.
 
 ## Security model
 
@@ -119,8 +129,15 @@ Research reads untrusted web pages, so the plugin keeps the loop narrow:
   with instructions to treat it as data. This lowers, but does not remove, prompt-injection risk; the
   two rules above are the real controls.
 - **Domain filters normalise hosts** (lower-case, IDNA, trailing dot) before matching on label
-  boundaries, and recheck the final URL after redirects. They choose which evidence is accepted;
-  they are **not a network firewall**.
+  boundaries. They are checked on the URL the plugin asks for. Hermes' `web_extract` does not
+  report where a redirect led, so a page that redirects from an allowed domain to a denied one can
+  still be accepted under the starting URL. Hermes applies its own URL-safety and website-policy
+  checks to the redirect target. The filters choose which evidence is accepted; they are **not a
+  network firewall**.
+- **Supplied documents never shape searches.** Follow-up queries are written after the model has
+  read the corpus, so when you supply documents (which may be private) only the queries planned from
+  your question are searched. Web-only jobs use follow-up queries, which can contain wording from
+  public pages.
 - **The report is rendered by code**, from findings that passed the quote check and the audit.
   Source titles and model text are Markdown-escaped, and a citation must name a retained source.
 - **Results are stored as JSON** in SQLite; nothing is unpickled. Hermes' truncation footer (which

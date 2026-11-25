@@ -211,3 +211,73 @@ class BackgroundAndCancelTests(JobTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def widen(obj, name, delay=0.05):
+    """Sleep after a check returns, so concurrent callers all pass it before anyone acts on it."""
+    original = getattr(obj, name)
+
+    def slow(*a, **kw):
+        value = original(*a, **kw)
+        time.sleep(delay)
+        return value
+
+    setattr(obj, name, slow)
+
+
+class AdmissionRaceTests(JobTestBase):
+    def _race(self, calls):
+        barrier = threading.Barrier(len(calls))
+        outcomes = [None] * len(calls)
+
+        def worker(i, fn):
+            barrier.wait()
+            try:
+                outcomes[i] = ("ok", fn())
+            except ContractError as exc:
+                outcomes[i] = ("refused", str(exc))
+
+        threads = [threading.Thread(target=worker, args=(i, fn)) for i, fn in enumerate(calls)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        return outcomes
+
+    def test_concurrent_starts_respect_max_active(self):
+        gate = threading.Event()
+        io = FakeIO(fetch_gate=gate)
+        manager = self.make_manager(io=io, max_active=1, foreground_wait=0)
+        widen(manager, "_active_count")
+        req = normalize_request({"question": "How many widgets?"})
+        out = self._race([lambda k=k: manager.start("conv", k, req) for k in ("a", "b", "c")])
+        gate.set()
+        self.assertEqual(sorted(o[0] for o in out), ["ok", "refused", "refused"])
+
+    def test_concurrent_same_key_different_request_is_rejected(self):
+        gate = threading.Event()
+        manager = self.make_manager(io=FakeIO(fetch_gate=gate), foreground_wait=0)
+        widen(manager.store, "get_job")
+        r1 = normalize_request({"question": "How many widgets?"})
+        r2 = normalize_request({"question": "How many gadgets?"})
+        out = self._race([lambda: manager.start("conv", "same", r1), lambda: manager.start("conv", "same", r2)])
+        gate.set()
+        self.assertEqual(sorted(o[0] for o in out), ["ok", "refused"])
+
+    def test_conversation_quota_holds_across_managers(self):
+        m1 = self.make_manager(foreground_wait=0)
+        m2 = self.make_manager(foreground_wait=0)
+        widen(m1.store, "count_jobs")
+        widen(m2.store, "count_jobs")
+        now = time.time()
+        for i in range(31):
+            m1.store.insert_job(f"pre-{i}", "conv", f"pre-{i}", "{}", now)
+        req = normalize_request({"question": "How many widgets?", "sources": {"web": False,
+                                 "documents": [{"title": "d", "text": "In 2025 the company sold 1,200 widgets in total."}]}})
+        out = self._race([lambda: m1.start("conv", "x", req), lambda: m2.start("conv", "y", req)])
+        self.assertEqual(sorted(o[0] for o in out), ["ok", "refused"])
+
+    def test_finished_runner_threads_are_forgotten(self):
+        self.start()
+        self.manager.shutdown(10)
+        self.assertEqual(self.manager._threads, {})

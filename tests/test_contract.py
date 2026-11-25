@@ -32,7 +32,8 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(quick["budget"]["modelCalls"], 4)
         deep = normalize_request({"question": "q", "depth": "deep", "budget": {"fetches": 10}})
         self.assertEqual(deep["budget"]["fetches"], 10)
-        self.assertEqual(deep["budget"]["modelCalls"], 20)
+        self.assertEqual(deep["budget"]["modelCalls"], 8)
+        self.assertEqual(deep["budget"]["searches"], 12)
         self.assertEqual(normalize_request({"question": "q"})["depth"], "standard")
         with self.assertRaises(ContractError):
             normalize_request({"question": "q", "depth": "extreme"})

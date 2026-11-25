@@ -28,6 +28,10 @@ class FakeCtx:
         self.tools = {}
         self.aux = {}
         self.settings = {}
+        self.unload = []
+
+    def on_unload(self, callback):
+        self.unload.append(callback)
 
     def dispatch_tool(self, name, args):
         self.dispatched.append((name, args))
@@ -106,6 +110,12 @@ class RegistrationTests(unittest.TestCase):
         # Capabilities never touches storage, so it works without a Hermes host.
         out = json.loads(ctx.tools["deep_research"]["handler"]({"action": "capabilities"}))
         self.assertEqual(out["engines"], ["portable"])
+
+    def test_unload_callback_registered_and_safe_without_a_manager(self):
+        ctx = FakeCtx()
+        self.load_plugin().register(ctx)
+        self.assertEqual(len(ctx.unload), 1)
+        ctx.unload[0]()  # no manager was created; must not open storage or raise
 
     def test_plugin_has_no_network_client_of_its_own(self):
         # All fetching must go through Hermes' web tools so their SSRF/redirect policy applies.

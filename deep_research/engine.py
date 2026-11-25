@@ -8,6 +8,7 @@ The algorithm follows OpenClaw's portable Deep Research engine (MIT); see NOTICE
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import re
@@ -124,6 +125,8 @@ class Engine:
         # composed or copied out of page text (that would be an exfiltration channel).
         self.fetchable: set[str] = {k for k in map(url_key, request["sources"]["urls"]) if k}
         self.seen_queries: set[str] = set()
+        self._charged: set[str] = set()  # each receipt is charged once per execution, live or replayed
+        self._corpus_full_noted = False
         self._lock = threading.Lock()
 
     # ---- effects ------------------------------------------------------
@@ -133,11 +136,23 @@ class Engine:
     def progress(self, message: str) -> None:
         self._progress(message, self.usage())
 
+    @staticmethod
+    def _step_id(kind: str, key: str) -> str:
+        return hashlib.sha256(f"{kind}\0{key}".encode()).hexdigest()
+
+    def _first_charge(self, step_id: str) -> bool:
+        with self._lock:
+            if step_id in self._charged:
+                return False
+            self._charged.add(step_id)
+            return True
+
     def _step(self, kind: str, key: str, work: Callable[[], Any]) -> Any:
-        step_id = hashlib.sha256(f"{kind}\0{key}".encode()).hexdigest()
+        step_id = self._step_id(kind, key)
         row = self.steps.get(step_id)
         if row is not None:
-            self.budget.charge(kind)
+            if self._first_charge(step_id):
+                self.budget.charge(kind)
             if row["state"] == "done":
                 return row["value"]
             if row["state"] == "started":
@@ -149,6 +164,7 @@ class Engine:
         if self.replay_only:
             raise ReplayOnly()
         self.budget.admit(kind)
+        self._first_charge(step_id)
         self.steps.put(step_id, "started")
         try:
             value = work()
@@ -165,8 +181,10 @@ class Engine:
             return {"text": str(reply.get("text") or ""), "tokens": reply.get("tokens"),
                     "model": str(reply.get("model") or "unobserved")}
 
+        key = f"{'audit' if audit else 'model'}:{prompt}"
+        counted = self._step_id("modelCalls", key) in self._charged
         try:
-            reply = self._step("modelCalls", f"{'audit' if audit else 'model'}:{prompt}", work)
+            reply = self._step("modelCalls", key, work)
         except _CONTROL:
             raise
         except StepNotRepeated as exc:
@@ -174,7 +192,9 @@ class Engine:
         except Exception:
             raise ModelUnavailable("The model did not produce a complete response.") from None
         with self._lock:
-            if isinstance(reply.get("tokens"), int):
+            if counted:
+                pass  # the same receipt was already counted in this execution
+            elif isinstance(reply.get("tokens"), int):
                 self.tokens += reply["tokens"]
             else:
                 self.tokens_complete = False
@@ -183,16 +203,21 @@ class Engine:
             else:
                 self.route = {"model": reply["model"], "runtime": "direct-provider"}
         try:
-            return parse_json(reply["text"])
+            parsed = parse_json(reply["text"])
         except (ValueError, json.JSONDecodeError):
-            raise ModelUnavailable("The model returned malformed JSON; no repair call was made.") from None
+            parsed = None
+        if not isinstance(parsed, dict):
+            raise ModelUnavailable("The model returned malformed JSON; no repair call was made.")
+        return parsed
 
     def _add_source(self, title: str, text: str, extraction: str, url: str | None = None,
                     requested: str | None = None, retrieved_at: str | None = None) -> None:
         remaining = CORPUS_MAX_BYTES - self.corpus_bytes
         data = text.encode("utf-8")
         if len(data) > remaining:
-            self.gaps.append("Evidence text exceeded the 60,000-byte corpus limit; omitted text remains unassessed.")
+            if not self._corpus_full_noted:
+                self._corpus_full_noted = True
+                self.gaps.append("Evidence text exceeded the 60,000-byte corpus limit; omitted text remains unassessed.")
             if remaining <= 0:
                 return
             text = data[:remaining].decode("utf-8", "ignore")
@@ -247,25 +272,31 @@ class Engine:
             picked.append(url)
         # Selection order is fixed before fetching, so source IDs never depend on network timing.
         picked = picked[: max(0, self.budget.remaining("fetches"))]
-        if not picked:
-            return
-        workers = max(1, min(self.request["budget"]["parallelism"], len(picked)))
+        workers = max(1, min(self.request["budget"]["parallelism"], len(picked) or 1))
+        # Fetch in batches of `workers` and stop once the corpus is full, so the fetch budget isn't
+        # spent on pages that could not be kept. Each worker runs in a copy of this thread's
+        # context, which carries the caller's Hermes profile into web_extract.
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="deep-research-fetch") as pool:
-            futures = [pool.submit(self._fetch, url) for url in picked]
-            outcomes, error = [], None
-            for future in futures:
-                try:
-                    outcomes.append(future.result())
-                except _CONTROL as exc:
-                    error = error or exc
-                    outcomes.append((None, None))
-        for url, (page, gap) in zip(picked, outcomes):
-            if gap:
-                self.gaps.append(gap)
-            if page:
-                self._add_source(page["title"], page["text"], "web-fetch-text-v1", page["url"], url, page["retrievedAt"])
-        if error:
-            raise error
+            for start in range(0, len(picked), workers):
+                if self.corpus_bytes >= CORPUS_MAX_BYTES:
+                    break
+                batch = picked[start:start + workers]
+                futures = [pool.submit(contextvars.copy_context().run, self._fetch, url) for url in batch]
+                outcomes, error = [], None
+                for future in futures:
+                    try:
+                        outcomes.append(future.result())
+                    except _CONTROL as exc:
+                        error = error or exc
+                        outcomes.append((None, None))
+                for url, (page, gap) in zip(batch, outcomes):
+                    if gap:
+                        self.gaps.append(gap)
+                    if page:
+                        self._add_source(page["title"], page["text"], "web-fetch-text-v1", page["url"], url,
+                                         page["retrievedAt"])
+                if error:
+                    raise error
 
     def _search(self, queries: list[str]) -> None:
         if not self.request["sources"]["web"]:
@@ -361,8 +392,11 @@ class Engine:
         try:
             for doc in req["sources"]["documents"]:
                 self._add_source(doc["title"], doc["text"], "supplied-text-v1", retrieved_at=self.documents_at)
-            self.progress("Planning research")
-            questions = self._plan()
+            if req["sources"]["web"]:
+                self.progress("Planning research")
+                questions = self._plan()
+            else:  # nothing to search, so a planning call would be wasted
+                questions = [plain(req["question"], 300)]
             if req["sources"]["urls"]:
                 self.progress("Fetching supplied URLs")
                 self._gather(req["sources"]["urls"])
@@ -373,17 +407,23 @@ class Engine:
                         "modelCalls budget exhausted" if self.budget.remaining("modelCalls") <= 0
                         else "Remaining modelCalls budget cannot fund extraction and audit.")
                 self.progress(f"Gathering evidence (round {round_no + 1})")
+                before = len(self.sources)
                 self._search(queries)
                 if not self.sources:
                     self.gaps.append("No readable sources were retrieved.")
                     break
+                if round_no and len(self.sources) == before:
+                    break  # follow-up searches found nothing new; another pass would repeat the last one
                 self.progress("Assessing retained evidence")
                 extracted = self._extract()
                 round_gaps = _strings(extracted.get("gaps"), 8)
-                queries = _strings(extracted.get("queries"), 4, 300)
+                # Follow-up queries are written after the model has read the corpus. With supplied
+                # documents that corpus may be private, so only the planned queries are ever searched.
+                queries = [] if req["sources"]["documents"] else _strings(extracted.get("queries"), 4, 300)
                 prior = {finding_key(f["statement"]): f for f in findings}
                 candidates = dict(prior)
-                for raw in (extracted.get("findings") or [])[:MAX_FINDINGS]:
+                raw_findings = extracted.get("findings")
+                for raw in (raw_findings if isinstance(raw_findings, list) else [])[:MAX_FINDINGS]:
                     if not isinstance(raw, dict) or not isinstance(raw.get("statement"), str) or not raw["statement"].strip():
                         continue
                     candidate = {"statement": plain(raw["statement"]), "evidence": raw.get("evidence"),

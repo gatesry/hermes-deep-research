@@ -57,7 +57,7 @@ def _matches(value: float, expected: float) -> bool:
 def calculation_problem(calc: dict, evidence: list[dict]) -> str | None:
     inputs = calc.get("inputs")
     op = calc.get("operation")
-    if op not in OPERATIONS:
+    if not isinstance(op, str) or op not in OPERATIONS:
         return "Unsupported calculation operation."
     if not isinstance(inputs, list) or len(inputs) != 2 or not all(isinstance(i, dict) for i in inputs):
         return "A calculation requires two finite inputs."
@@ -102,10 +102,12 @@ def evidence_problem(finding: dict, sources: list[dict]) -> str | None:
     for item in evidence:
         if not isinstance(item, dict):
             return "Quote does not occur in the recorded source."
-        quote = str(item.get("quote") or "")
+        quote, source_id = item.get("quote"), item.get("sourceId")
+        if not isinstance(quote, str) or not isinstance(source_id, str):
+            return "Quote does not occur in the recorded source."
         if len(_WS.sub("", quote)) < MIN_QUOTE_CHARS:
             return f"Quote is shorter than {MIN_QUOTE_CHARS} non-whitespace characters."
-        source = by_id.get(item.get("sourceId"))
+        source = by_id.get(source_id)
         if source is None or not quote_in_text(quote, source["text"]):
             return "Quote does not occur in the recorded source."
     calc = finding.get("calculation")

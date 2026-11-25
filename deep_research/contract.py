@@ -19,7 +19,9 @@ MAX_BUDGET = {"modelCalls": 30, "searches": 20, "fetches": 40, "parallelism": 4,
 DEPTH_PRESETS = {
     "quick": {"modelCalls": 4, "searches": 3, "fetches": 6, "parallelism": 2, "durationMs": 90_000},
     "standard": dict(DEFAULT_BUDGET),
-    "deep": {"modelCalls": 20, "searches": 14, "fetches": 30, "parallelism": 4, "durationMs": 600_000},
+    # Three rounds use at most 7 model calls (plan + extract/audit per round), so "deep" buys
+    # more searches, fetches and time rather than unreachable model calls.
+    "deep": {"modelCalls": 8, "searches": 12, "fetches": 30, "parallelism": 4, "durationMs": 600_000},
 }
 CORPUS_MAX_BYTES = 60_000
 PAGE_MAX_CHARS = 12_000
