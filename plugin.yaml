@@ -1,0 +1,24 @@
+name: deep-research
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: "Bounded, source-backed web research as background jobs: exact-quote evidence, checked arithmetic, a separate model audit, and an honest list of gaps."
+author: "gatesry (Python port of OpenClaw's portable Deep Research, MIT)"
+license: MIT
+homepage: https://github.com/gatesry/hermes-deep-research
+tags: [research, web, citations]
+provides_tools:
+  - deep_research
+config_schema:
+  foreground_wait_seconds:
+    type: int
+    default: 300
+    description: "How long start/resume wait for a result before returning a running jobId (0-360)."
+  max_active_jobs:
+    type: int
+    default: 4
+    description: "Research jobs allowed to run at once in this process (1-16)."
+  max_output_tokens:
+    type: int
+    default: 4096
+    description: "Output token cap for each model call (512-32768)."
