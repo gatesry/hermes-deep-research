@@ -184,8 +184,9 @@ _TRACKING = re.compile(r"^(utm_[a-z0-9_]+|gclid|dclid|gbraid|wbraid|fbclid|msclk
 
 
 def canonical_url(url: str) -> str | None:
-    """The URL to fetch: http(s) only, no userinfo, normalized host, default port, fragment
-    and common tracking parameters dropped. Path and remaining query are kept verbatim."""
+    """The URL to fetch: http(s) only, no userinfo, normalized host, default port and fragment
+    dropped. These are equivalent spellings (RFC 3986); path and query are kept byte for byte,
+    because changing them can change, or invalidate, what the server returns."""
     try:
         parts = urlsplit(url.strip())
         scheme = parts.scheme.lower()
@@ -198,17 +199,18 @@ def canonical_url(url: str) -> str | None:
     netloc = f"[{host}]" if ":" in host else host
     if port is not None and port != {"http": 80, "https": 443}[scheme]:
         netloc += f":{port}"
-    query = "&".join(p for p in parts.query.split("&") if p and not _TRACKING.match(p.split("=", 1)[0]))
-    return urlunsplit((scheme, netloc, parts.path or "/", query, ""))
+    return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
 
 
 def url_key(url: str) -> str | None:
-    """Dedup key: the canonical URL with http/https and trailing-slash variants folded together."""
+    """Dedup key: the canonical URL minus common tracking parameters (utm_*, gclid, fbclid...), which
+    don't change the page. Scheme and trailing slash are kept: they can name different resources."""
     clean = canonical_url(url)
     if clean is None:
         return None
     parts = urlsplit(clean)
-    return parts.netloc + parts.path.rstrip("/") + (f"?{parts.query}" if parts.query else "")
+    query = "&".join(p for p in parts.query.split("&") if not (p and _TRACKING.match(p.split("=", 1)[0])))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
 
 
 def _matches(host: str, domain: str) -> bool:

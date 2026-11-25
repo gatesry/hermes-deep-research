@@ -192,8 +192,8 @@ if __name__ == "__main__":
 class UrlDedupTests(unittest.TestCase):
     def test_url_variants_are_fetched_once_and_charged_once(self):
         hits = [{"url": u, "title": "Report A"} for u in [
-            "https://a.example/report", "https://A.example/report#top", "http://a.example/report/",
-            "https://a.example:443/report?utm_source=feed"]]
+            "https://a.example/report", "https://A.example/report#top", "https://a.example:443/report",
+            "https://a.example/report?utm_source=feed"]]
         io = FakeIO(hits=hits)
         result, _, _ = run({"question": "How many widgets?"}, io=io)
         self.assertEqual(io.calls["fetch"], 1)
@@ -202,16 +202,18 @@ class UrlDedupTests(unittest.TestCase):
 
     def test_caller_url_variant_of_search_hit_not_refetched(self):
         io = FakeIO(hits=[{"url": "https://a.example/report#s2", "title": "Report A"}])
-        run({"question": "How many widgets?", "sources": {"urls": ["https://A.example/report/"]}}, io=io)
+        run({"question": "How many widgets?", "sources": {"urls": ["https://A.example/report"]}}, io=io)
         self.assertEqual(io.calls["fetch"], 1)
 
-    def test_fetch_uses_cleaned_url(self):
+    def test_fetch_keeps_the_query_and_drops_only_the_fragment(self):
         fetched = []
-        io = FakeIO(hits=[{"url": "https://A.example/report?utm_medium=x#frag", "title": "Report A"}])
+        url = "https://a.example/report?utm_medium=x"
+        io = FakeIO(hits=[{"url": "https://A.example/report?utm_medium=x#frag", "title": "Report A"}],
+                    pages={url: ("Report A", PAGE_A)})
         original = io.fetch
-        io.fetch = lambda url: (fetched.append(url), original(url))[1]
+        io.fetch = lambda u: (fetched.append(u), original(u))[1]
         run({"question": "How many widgets?"}, io=io)
-        self.assertEqual(fetched, ["https://a.example/report"])
+        self.assertEqual(fetched, [url])
 
 
 PROFILE = contextvars.ContextVar("profile", default="process-default")
@@ -348,10 +350,36 @@ class AntigravityFixTests(unittest.TestCase):
             raise ToolUnavailable("web_extract failed: ddgs is a search-only backend. Set web.extract_backend.")
 
         io.fetch = down
+        io.hits = [{"url": f"https://p{i}.example/x", "title": str(i)} for i in range(6)]
         result, _, _ = run({"question": "q", "budget": {"parallelism": 1}}, io=io)
-        self.assertEqual(io.calls["fetch"], 1)
-        reason = [g for g in result["gaps"] if "search-only backend" in g]
-        self.assertEqual(len(reason), 1)
+        self.assertEqual(io.calls["fetch"], 3)  # three failures in a row with no success: stop
+        self.assertEqual(len([g for g in result["gaps"] if g.startswith("Page fetching stopped")]), 1)
+        self.assertTrue([g for g in result["gaps"] if "search-only backend" in g])
+
+    def test_a_refused_page_does_not_stop_other_fetches(self):
+        from deep_research.adapters import ToolUnavailable
+        io = FakeIO()
+        original = io.fetch
+
+        def picky(url):
+            if url == "https://a.example/report":
+                io._count("fetch")
+                raise ToolUnavailable("web_extract failed: Blocked by website policy")
+            return original(url)
+
+        io.fetch = picky
+        result, _, _ = run({"question": "q"}, io=io)
+        self.assertEqual(io.calls["fetch"], 2)
+        self.assertEqual([s["url"] for s in result["sources"]], ["https://b.example/review"])
+        self.assertFalse([g for g in result["gaps"] if g.startswith("Page fetching stopped")])
+
+    def test_urls_skipped_at_exact_corpus_capacity_are_reported(self):
+        pages = {f"https://p{i}.example/doc": (f"Page {i}", f"{i}" + "y" * 11_999) for i in range(6)}
+        result, _, _ = run({"question": "q", "sources": {"web": False, "urls": list(pages)},
+                            "budget": {"fetches": 40, "parallelism": 1}}, io=FakeIO(pages=pages, hits=[]))
+        self.assertEqual(len(result["sources"]), 5)
+        self.assertEqual(len([g for g in result["gaps"] if "60,000-byte corpus limit" in g]), 1)
+        self.assertEqual(result["status"], "partial")
 
     def test_calculation_keeps_only_known_fields(self):
         q1 = "In 2025 the company sold 1,200 widgets in total"

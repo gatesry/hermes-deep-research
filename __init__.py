@@ -8,6 +8,7 @@ from __future__ import annotations
 import threading
 
 from .deep_research.adapters import AUDIT_TASK, HermesIO
+from .deep_research.contract import ContractError
 from .deep_research.tool import SCHEMA, handle
 
 PLUGIN_NAME = "deep-research"
@@ -31,6 +32,8 @@ def register(ctx) -> None:
     def manager():
         # Opened lazily inside a tool call, so the database lands in the calling profile's home.
         with lock:
+            if state.get("unloaded"):
+                raise ContractError("The deep-research plugin was unloaded; start a new session to use it.")
             if "manager" not in state:
                 from plugins.plugin_storage import plugin_db
 
@@ -49,6 +52,7 @@ def register(ctx) -> None:
     def shutdown():
         # Unload/reload/disable: stop local runners cooperatively. Never opens storage itself.
         with lock:
+            state["unloaded"] = True
             current = state.get("manager")
         if current is not None:
             current.shutdown()

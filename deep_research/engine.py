@@ -142,7 +142,9 @@ class Engine:
         self.seen_queries: set[str] = set()
         self._charged: set[str] = set()  # each receipt is charged once per execution, live or replayed
         self._corpus_full_noted = False
-        self._extract_down: str | None = None  # set once web_extract itself reports it cannot work
+        self._extract_down: str | None = None  # set when web_extract looks broken, not just one page
+        self._fetch_ok = 0
+        self._fetch_tool_errors = 0
         self._lock = threading.Lock()
 
     # ---- effects ------------------------------------------------------
@@ -231,9 +233,7 @@ class Engine:
         remaining = CORPUS_MAX_BYTES - self.corpus_bytes
         data = text.encode("utf-8")
         if len(data) > remaining:
-            if not self._corpus_full_noted:
-                self._corpus_full_noted = True
-                self.gaps.append("Evidence text exceeded the 60,000-byte corpus limit; omitted text remains unassessed.")
+            self._note_corpus_full()
             if remaining <= 0:
                 return
             text = data[:remaining].decode("utf-8", "ignore")
@@ -268,17 +268,31 @@ class Engine:
         except StepNotRepeated as exc:
             return None, f"Source not re-fetched: {url} ({exc})"
         except Exception as exc:
-            if type(exc).__name__ == "ToolUnavailable":  # the extractor is down, not just this page
-                with self._lock:
-                    first = self._extract_down is None
-                    self._extract_down = self._extract_down or plain(str(exc), 240)
-                return None, (f"Page fetching stopped: {self._extract_down}" if first else None)
-            return None, f"Source unavailable: {url} ({type(exc).__name__})"
+            if type(exc).__name__ != "ToolUnavailable":
+                return None, f"Source unavailable: {url} ({type(exc).__name__})"
+            # Hermes reports both a refused page and a broken backend as a tool error. Treat it as
+            # the backend only when the first three fetches all fail and none has worked.
+            reason = plain(str(exc), 240)
+            with self._lock:
+                self._fetch_tool_errors += 1
+                stop = self._fetch_ok == 0 and self._fetch_tool_errors >= 3 and self._extract_down is None
+                if stop:
+                    self._extract_down = reason
+            if stop:
+                return None, f"Page fetching stopped after repeated failures: {reason}"
+            return None, f"Source unavailable: {url} ({reason})"
+        with self._lock:
+            self._fetch_ok += 1
         if not domain_allowed(page["url"], sources["allowDomains"], sources["denyDomains"]):
             return None, f"Excluded redirected source: {url}"
         if not page["text"].strip():
             return None, f"No readable evidence: {url}"
         return page, None
+
+    def _note_corpus_full(self) -> None:
+        if not self._corpus_full_noted:
+            self._corpus_full_noted = True
+            self.gaps.append("Evidence text exceeded the 60,000-byte corpus limit; omitted text remains unassessed.")
 
     def _gather(self, urls: list[str]) -> None:
         sources = self.request["sources"]
@@ -308,7 +322,10 @@ class Engine:
         # context, which carries the caller's Hermes profile into web_extract.
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="deep-research-fetch") as pool:
             for start in range(0, len(picked), workers):
-                if self.corpus_bytes >= CORPUS_MAX_BYTES or self._extract_down:
+                if self.corpus_bytes >= CORPUS_MAX_BYTES:
+                    self._note_corpus_full()  # the remaining URLs are skipped, so say so
+                    break
+                if self._extract_down:
                     break
                 batch = picked[start:start + workers]
                 futures = [pool.submit(contextvars.copy_context().run, self._fetch, url) for url in batch]

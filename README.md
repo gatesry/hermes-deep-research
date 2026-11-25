@@ -112,9 +112,11 @@ hermes plugins disable deep-research   # keeps the job database
 hermes plugins remove deep-research    # removes the plugin; plugin-data/deep-research stays until you delete it
 ```
 
-Disabling, removing or reloading the plugin signals running jobs to stop at their next call; any
-call in progress finishes first. Stopped jobs show as `paused` and can be resumed after you
-re-enable the plugin.
+Disable and remove take full effect at the next gateway restart. Until then, a session that already
+has the tool can keep calling it. When Hermes unloads the plugin (a plugin reload, or the gateway
+shutting down cleanly), running jobs stop at their next call; a call already in progress finishes
+first. Stopped jobs show as `paused`, as they do after a crash, and `resume` continues them once the
+plugin is loaded again.
 
 ## Security model
 
@@ -124,17 +126,19 @@ Research reads untrusted web pages, so the plugin keeps the loop narrow:
   safety checks (private and cloud-metadata addresses, redirect targets) and your website policy
   apply. A test fails if the plugin imports an HTTP or socket library.
 - **Only caller- or search-supplied URLs are fetched.** URLs a model writes, or copies out of page
-  text, are never fetched. URLs are canonicalised first (host normalised, fragment, default port and
-  common tracking parameters such as `utm_*` removed; http/https and trailing-slash variants treated
-  as one), so duplicates don't spend the fetch budget.
+  text, are never fetched. Each URL is fetched as given, minus only equivalent spellings (host case
+  and IDNA, default port, fragment). For dedup, common tracking parameters such as `utm_*` are also
+  ignored, so the same page linked with different tracking tags is fetched once. Scheme and trailing
+  slash are kept, since they can name different resources.
 - **Model calls have no tools.** Request and source text is passed as one labelled JSON data block
   with instructions to treat it as data. This lowers, but does not remove, prompt-injection risk; the
   two rules above are the real controls.
 - **Domain filters normalise hosts** (lower-case, IDNA, trailing dot) before matching on label
-  boundaries. They are checked on the URL the plugin asks for. Hermes' `web_extract` does not
-  report where a redirect led, so a page that redirects from an allowed domain to a denied one can
-  still be accepted under the starting URL. Hermes applies its own URL-safety and website-policy
-  checks to the redirect target. The filters choose which evidence is accepted; they are **not a
+  boundaries. They are checked on the URL the plugin asks for, and again on the final URL when
+  Hermes reports one. Whether it does depends on the extract backend, and a cached result never
+  includes it. In those cases, a page that redirects from an allowed domain to a denied one can be
+  accepted under the starting URL. Hermes still applies its own URL-safety and website-policy checks
+  to redirect targets. The filters choose which evidence is accepted; they are **not a
   network firewall**.
 - **Supplied documents never shape searches.** Follow-up queries are written after the model has
   read the corpus, so when you supply documents (which may be private) only the queries planned from

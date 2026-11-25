@@ -117,6 +117,9 @@ class RegistrationTests(unittest.TestCase):
         self.load_plugin().register(ctx)
         self.assertEqual(len(ctx.unload), 1)
         ctx.unload[0]()  # no manager was created; must not open storage or raise
+        out = json.loads(ctx.tools["deep_research"]["handler"]({"action": "status", "jobId": "x"},
+                                                                conversation_id="c"))
+        self.assertIn("unload", out["error"])  # no new manager after unload
 
     def test_plugin_has_no_network_client_of_its_own(self):
         # All fetching must go through Hermes' web tools so their SSRF/redirect policy applies.

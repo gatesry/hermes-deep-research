@@ -193,10 +193,10 @@ if __name__ == "__main__":
 
 
 class UrlCanonicalTests(unittest.TestCase):
-    def test_fragment_tracking_case_and_default_port_removed(self):
+    def test_fragment_case_and_default_port_removed(self):
         self.assertEqual(
-            canonical_url("HTTPS://Docs.Example.COM.:443/a/b?id=7&utm_source=x&UTM_Medium=y&gclid=z&fbclid=q#part"),
-            "https://docs.example.com/a/b?id=7")
+            canonical_url("HTTPS://Docs.Example.COM.:443/a/b?id=7&utm_source=x&gclid=z#part"),
+            "https://docs.example.com/a/b?id=7&utm_source=x&gclid=z")  # query is fetched exactly as given
 
     def test_meaningful_query_order_and_case_preserved(self):
         self.assertEqual(canonical_url("https://e.example/p?b=2&A=1"), "https://e.example/p?b=2&A=1")
@@ -212,11 +212,17 @@ class UrlCanonicalTests(unittest.TestCase):
                     "https://e%78ample.com/", "not a url", "https://e.example:99999/"]:
             self.assertIsNone(canonical_url(bad), bad)
 
-    def test_scheme_and_trailing_slash_variants_share_a_key(self):
-        variants = ["http://e.example/doc", "https://e.example/doc/", "https://E.example/doc#x",
-                    "https://e.example/doc?utm_campaign=1"]
+    def test_equivalent_spellings_share_a_key(self):
+        variants = ["https://e.example/doc", "https://E.example/doc#x", "https://e.example:443/doc",
+                    "https://e.example/doc?utm_campaign=1&fbclid=2"]
         self.assertEqual(len({url_key(v) for v in variants}), 1)
         self.assertEqual(url_key("https://e.example"), url_key("https://e.example/"))
+
+    def test_scheme_slash_and_empty_query_segments_stay_distinct(self):
+        # These can name different resources, so they are never folded together.
+        self.assertNotEqual(url_key("http://e.example/doc"), url_key("https://e.example/doc"))
+        self.assertNotEqual(url_key("https://e.example/doc"), url_key("https://e.example/doc/"))
+        self.assertEqual(canonical_url("https://e.example/doc?a=1&&b=2"), "https://e.example/doc?a=1&&b=2")
 
     def test_distinct_documents_keep_distinct_keys(self):
         self.assertNotEqual(url_key("https://e.example/doc"), url_key("https://e.example/doc2"))

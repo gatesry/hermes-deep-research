@@ -91,6 +91,7 @@ class JobManager:
         return self._view(self._refresh(job))
 
     def _load(self, conversation: str, job_id: str) -> dict:
+        self._refuse_if_stopping()
         self._prune()
         job = self.store.get_job(job_id)
         if not job or job["conversation"] != conversation:
@@ -106,6 +107,7 @@ class JobManager:
         return job, job["result"]
 
     def start(self, conversation: str, key: str, request: dict) -> dict:
+        self._refuse_if_stopping()
         self._prune()
         job_id = self.job_id(conversation, key)
         canonical = canonical_request(request)
@@ -114,6 +116,9 @@ class JobManager:
             return self._same_request(existing, canonical)
         with self._admit:
             self._refuse_if_stopping()
+            existing = self.store.get_job(job_id)  # recheck: an identical start may have just won
+            if existing:
+                return self._same_request(existing, canonical)
             if self._active_count() >= self.max_active:
                 raise ContractError(f"{self.max_active} research jobs are already running; try again when one finishes.")
             outcome = self.store.insert_job_if_room(job_id, conversation, key, canonical, self.clock(),
@@ -152,7 +157,9 @@ class JobManager:
             event.set()
         if not self._alive(job_id) and job["state"] != "running":
             # Paused or never started: replay recorded receipts only, then settle as cancelled.
-            self._launch(job_id, replay_only="cancelled")
+            with self._admit:
+                if not self._stopping.is_set():  # while unloading, the flag alone is recorded
+                    self._launch(job_id, replay_only="cancelled")
         return self.wait(job_id, min(self.foreground_wait, self.cancel_wait) if wait is None else wait)
 
     def wait(self, job_id: str, timeout: float) -> dict:
@@ -167,10 +174,11 @@ class JobManager:
     def shutdown(self, timeout: float = 5.0) -> None:
         """Plugin unload: stop every local runner at its next call, record its job as paused (resumable,
         receipts kept), and close the database once no runner still needs it."""
-        self._stopping.set()
-        with self._lock:
-            events = list(self._cancel_events.values())
-            threads = list(self._threads.values())
+        with self._admit:  # no launch can be half-done while we take the snapshot
+            self._stopping.set()
+            with self._lock:
+                events = list(self._cancel_events.values())
+                threads = list(self._threads.values())
         for event in events:
             event.set()
         deadline = time.monotonic() + timeout
@@ -216,7 +224,7 @@ class JobManager:
             budget = Budget(request["budget"], deadline_at=job["deadline_at"], clock=self.clock)
 
             def cancelled() -> bool:
-                return cancel_event.is_set() or self.store.is_cancel_requested(job_id)
+                return cancel_event.is_set() or self._stopping.is_set() or self.store.is_cancel_requested(job_id)
 
             engine = Engine(
                 request, self.io_factory(), JobSteps(self.store, job_id), budget,

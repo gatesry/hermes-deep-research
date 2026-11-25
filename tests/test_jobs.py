@@ -254,6 +254,16 @@ class AdmissionRaceTests(JobTestBase):
         gate.set()
         self.assertEqual(sorted(o[0] for o in out), ["ok", "refused", "refused"])
 
+    def test_identical_concurrent_starts_share_one_job_even_at_capacity(self):
+        gate = threading.Event()
+        manager = self.make_manager(io=FakeIO(fetch_gate=gate), max_active=1, foreground_wait=0)
+        widen(manager.store, "get_job")
+        req = normalize_request({"question": "How many widgets?"})
+        out = self._race([lambda: manager.start("conv", "same", req), lambda: manager.start("conv", "same", req)])
+        gate.set()
+        self.assertEqual([o[0] for o in out], ["ok", "ok"], out)
+        self.assertEqual(out[0][1]["id"], out[1][1]["id"])
+
     def test_concurrent_same_key_different_request_is_rejected(self):
         gate = threading.Event()
         manager = self.make_manager(io=FakeIO(fetch_gate=gate), foreground_wait=0)
@@ -299,6 +309,26 @@ class LifecycleTests(JobTestBase):
         self.assertIsNone(stored["result"])
         resumed = fresh.resume("conv-1", job["id"])
         self.assertIn(resumed["state"], ("completed", "partial"))
+
+    def test_shutdown_waits_for_admission_and_refuses_later_work(self):
+        gate = threading.Event()
+        manager = self.make_manager(io=FakeIO(fetch_gate=gate), foreground_wait=0)
+        widen(manager, "_active_count", delay=0.2)  # start() is inside admission when shutdown begins
+        req = normalize_request({"question": "How many widgets?"})
+        starter = threading.Thread(target=lambda: manager.start("conv-1", "k1", req))
+        starter.start()
+        time.sleep(0.05)
+        stopper = threading.Thread(target=manager.shutdown, args=(10,))
+        stopper.start()
+        time.sleep(0.3)
+        gate.set()
+        starter.join(10)
+        stopper.join(10)
+        with self.assertRaises(ContractError):
+            manager.start("conv-1", "k2", req)
+        fresh = self.make_manager()
+        rows = fresh.store._conn.execute("SELECT state FROM jobs").fetchall()
+        self.assertEqual([r[0] for r in rows], ["paused"])
 
     def test_heartbeat_survives_a_transient_database_error(self):
         import deep_research.jobs as jobs_module

@@ -12,14 +12,15 @@ First release.
   7-day retention, heartbeat, cancel, and receipt-based resume that never repeats an interrupted call.
 - Fetches only URLs supplied by the caller or returned by search, through Hermes' own `web_extract`.
 - Domain filters normalise hosts (case, IDNA, trailing dot) and match on label boundaries.
-- URLs are canonicalised (fragment, default port, tracking parameters, scheme and trailing-slash
-  variants) before dedup, so duplicates are fetched and charged once.
-- Fetch workers keep the caller's profile context; job admission, the per-conversation quota and
-  idempotency checks are race-free; plugin unload stops running jobs; malformed model output becomes
-  gaps instead of failing the job; fetching stops when the corpus is full; repeated receipts count
-  once; document-only jobs skip planning; supplied documents never feed follow-up searches.
-- Unloading the plugin pauses running jobs (resumable) instead of cancelling them; `cancel`
-  returns within about 5 s; finished jobs drop their resume receipts; dropped supplied URLs and a
-  failing extract backend are reported as gaps; follow-up prompts list earlier queries.
+- URLs are fetched as given, minus equivalent spellings (host case/IDNA, default port, fragment);
+  dedup also ignores common tracking parameters, so one page is fetched and charged once.
+- Fetch workers keep the caller's profile context. Job admission, the per-conversation quota and
+  idempotency checks are serialised (tested under concurrent starts). Plugin unload pauses running
+  jobs. Malformed model output becomes gaps instead of failing the job. Fetching stops when the
+  corpus is full; repeated receipts count once; document-only jobs skip planning; supplied
+  documents never feed follow-up searches.
+- `cancel` returns within about 5 s; finished jobs drop their resume receipts; dropped supplied
+  URLs, URLs skipped at the corpus limit and a failing extract backend are reported as gaps; one
+  refused page no longer stops other fetches; follow-up prompts list earlier queries.
 - CI actions pinned to commit SHAs with a 10-minute timeout.
 - Report footer states that verified is not proof of truth; no confidence scores.
