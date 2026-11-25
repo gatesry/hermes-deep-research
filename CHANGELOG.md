@@ -12,3 +12,6 @@ First release.
   7-day retention, heartbeat, cancel, and receipt-based resume that never repeats an interrupted call.
 - Fetches only URLs supplied by the caller or returned by search, through Hermes' own `web_extract`.
 - Domain filters normalise hosts (case, IDNA, trailing dot) and recheck the final URL after redirects.
+- URLs are canonicalised (fragment, default port, tracking parameters, scheme and trailing-slash
+  variants) before dedup, so duplicates are fetched and charged once.
+- Report footer states that verified is not proof of truth; no confidence scores.

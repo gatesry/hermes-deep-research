@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_BUDGET = {"modelCalls": 8, "searches": 6, "fetches": 12, "parallelism": 2, "durationMs": 180_000}
 MAX_BUDGET = {"modelCalls": 30, "searches": 20, "fetches": 40, "parallelism": 4, "durationMs": 900_000}
@@ -176,6 +176,37 @@ def host_of(url: str) -> str | None:
             return normalize_host(raw)
     except ValueError:
         return None
+
+
+_TRACKING = re.compile(r"^(utm_[a-z0-9_]+|gclid|dclid|gbraid|wbraid|fbclid|msclkid|yclid|igshid|mc_cid|mc_eid)$", re.I)
+
+
+def canonical_url(url: str) -> str | None:
+    """The URL to fetch: http(s) only, no userinfo, normalized host, default port, fragment
+    and common tracking parameters dropped. Path and remaining query are kept verbatim."""
+    try:
+        parts = urlsplit(url.strip())
+        scheme = parts.scheme.lower()
+        host = host_of(url)
+        if host is None:
+            return None
+        port = parts.port
+    except (ValueError, AttributeError):
+        return None
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None and port != {"http": 80, "https": 443}[scheme]:
+        netloc += f":{port}"
+    query = "&".join(p for p in parts.query.split("&") if p and not _TRACKING.match(p.split("=", 1)[0]))
+    return urlunsplit((scheme, netloc, parts.path or "/", query, ""))
+
+
+def url_key(url: str) -> str | None:
+    """Dedup key: the canonical URL with http/https and trailing-slash variants folded together."""
+    clean = canonical_url(url)
+    if clean is None:
+        return None
+    parts = urlsplit(clean)
+    return parts.netloc + parts.path.rstrip("/") + (f"?{parts.query}" if parts.query else "")
 
 
 def _matches(host: str, domain: str) -> bool:

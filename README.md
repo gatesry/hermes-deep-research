@@ -23,7 +23,8 @@ It is a Python port of the portable engine in
 
 The report always has four sections: **Findings** (with `[S1]`-style citations and byte offsets),
 **Disagreements** (conflicts between sources, or "None found"), **Unresolved** (gaps, failed checks,
-exhausted budgets), and **Sources**. Anything that could not be verified is listed, not dropped
+exhausted budgets), and **Sources**, followed by a one-line note that "verified" is not proof of
+truth. There are no confidence scores. Anything that could not be verified is listed, not dropped
 silently. A job whose evidence has gaps finishes as `partial`, not `completed`.
 
 ## Install
@@ -111,7 +112,9 @@ Research reads untrusted web pages, so the plugin keeps the loop narrow:
   safety checks (private and cloud-metadata addresses, redirect targets) and your website policy
   apply. A test fails if the plugin imports an HTTP or socket library.
 - **Only caller- or search-supplied URLs are fetched.** URLs a model writes, or copies out of page
-  text, are never fetched.
+  text, are never fetched. URLs are canonicalised first (host normalised, fragment, default port and
+  common tracking parameters such as `utm_*` removed; http/https and trailing-slash variants treated
+  as one), so duplicates don't spend the fetch budget.
 - **Model calls have no tools.** Request and source text is passed as one labelled JSON data block
   with instructions to treat it as data. This lowers, but does not remove, prompt-injection risk; the
   two rules above are the real controls.
@@ -137,7 +140,8 @@ correct or that the research is complete.
   but has no receipt is never repeated: the job finishes as `indeterminate` with the gap listed.
   After the deadline, or after `cancel`, resume replays receipts only and makes no new calls.
 - **Additions:** `depth` presets, a Disagreements section, a fetch-origin rule, IDNA host
-  normalisation, and a render-time citation check.
+  normalisation, URL canonicalisation before dedup, a render-time citation check, and a
+  "verified is not true" footer.
 - **Search snippets are never evidence**, as in OpenClaw; only fetched page text is.
 
 ## Development

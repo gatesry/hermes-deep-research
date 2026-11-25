@@ -186,3 +186,28 @@ class EngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UrlDedupTests(unittest.TestCase):
+    def test_url_variants_are_fetched_once_and_charged_once(self):
+        hits = [{"url": u, "title": "Report A"} for u in [
+            "https://a.example/report", "https://A.example/report#top", "http://a.example/report/",
+            "https://a.example:443/report?utm_source=feed"]]
+        io = FakeIO(hits=hits)
+        result, _, _ = run({"question": "How many widgets?"}, io=io)
+        self.assertEqual(io.calls["fetch"], 1)
+        self.assertEqual(result["usage"]["fetches"], 1)
+        self.assertEqual(len(result["sources"]), 1)
+
+    def test_caller_url_variant_of_search_hit_not_refetched(self):
+        io = FakeIO(hits=[{"url": "https://a.example/report#s2", "title": "Report A"}])
+        run({"question": "How many widgets?", "sources": {"urls": ["https://A.example/report/"]}}, io=io)
+        self.assertEqual(io.calls["fetch"], 1)
+
+    def test_fetch_uses_cleaned_url(self):
+        fetched = []
+        io = FakeIO(hits=[{"url": "https://A.example/report?utm_medium=x#frag", "title": "Report A"}])
+        original = io.fetch
+        io.fetch = lambda url: (fetched.append(url), original(url))[1]
+        run({"question": "How many widgets?"}, io=io)
+        self.assertEqual(fetched, ["https://a.example/report"])

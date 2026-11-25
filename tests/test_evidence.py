@@ -163,6 +163,13 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(out["citations"], [])
         self.assertIn("Citation outside the retained sources omitted: Ghost claim", out["report"])
 
+    def test_footer_says_verified_is_not_true_and_has_no_confidence_scores(self):
+        out = render_report("Q", [], SOURCES, [])
+        tail = out["report"].rstrip().splitlines()[-1]
+        self.assertTrue(out["report"].index(tail) > out["report"].index("## Sources"))
+        self.assertIn("not proof that a claim is true", tail)
+        self.assertNotIn("confidence", out["report"].lower())
+
     def test_disagreements_section_always_present(self):
         out = render_report("Q", [], SOURCES, [])
         self.assertIn("## Disagreements\n- None found.", out["report"])

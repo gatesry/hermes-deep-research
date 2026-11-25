@@ -22,7 +22,9 @@ from .contract import (
     Budget,
     BudgetExhausted,
     DeadlineExceeded,
+    canonical_url,
     domain_allowed,
+    url_key,
 )
 from .evidence import evidence_problem, finding_key, plain, render_report
 
@@ -117,10 +119,10 @@ class Engine:
         self.tokens_complete = True
         self.route = {"model": "unobserved", "runtime": "unobserved"}
         self.audit_route: str | None = None
-        self.seen_urls: set[str] = set()
+        self.seen_urls: set[str] = set()  # url_key values, so URL variants are fetched and charged once
         # Only URLs the caller supplied or a search returned may be fetched, never one a model
         # composed or copied out of page text (that would be an exfiltration channel).
-        self.fetchable: set[str] = set(request["sources"]["urls"])
+        self.fetchable: set[str] = {k for k in map(url_key, request["sources"]["urls"]) if k}
         self.seen_queries: set[str] = set()
         self._lock = threading.Lock()
 
@@ -235,12 +237,13 @@ class Engine:
     def _gather(self, urls: list[str]) -> None:
         sources = self.request["sources"]
         picked: list[str] = []
-        for url in urls:
-            if url in self.seen_urls or url not in self.fetchable:
+        for raw in urls:
+            url, key = canonical_url(raw), url_key(raw)
+            if url is None or key in self.seen_urls or key not in self.fetchable:
                 continue
             if not domain_allowed(url, sources["allowDomains"], sources["denyDomains"]):
                 continue
-            self.seen_urls.add(url)
+            self.seen_urls.add(key)
             picked.append(url)
         # Selection order is fixed before fetching, so source IDs never depend on network timing.
         picked = picked[: max(0, self.budget.remaining("fetches"))]
@@ -282,7 +285,9 @@ class Engine:
                 self.gaps.append(f"Search unavailable: {plain(query, 200)}")
                 continue
             for hit in hits:
-                self.fetchable.add(hit["url"])
+                key = url_key(hit["url"])
+                if key:
+                    self.fetchable.add(key)
                 urls.append(hit["url"])
         self._gather(urls)
 

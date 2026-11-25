@@ -138,6 +138,10 @@ def _fmt(value: float) -> str:
     return f"{value:g}" if abs(value) < 1e15 else repr(value)
 
 
+VERIFIED_NOTE = ("_Verified here means each quote appears in its fetched source and a separate model audit "
+                 "judged it supportive. That is not proof that a claim is true, or that the research is complete._")
+
+
 def render_report(question: str, findings: list[dict], sources: list[dict], gaps: list[str],
                   disagreements: list[str] | None = None) -> dict:
     parts: list[str] = [f"# {md(question, 8000)}\n\n## Findings"]
@@ -177,4 +181,5 @@ def render_report(question: str, findings: list[dict], sources: list[dict], gaps
     for s in sources:
         where = f" — {md(s['url'], 2048)}" if s.get("url") else " (supplied document)"
         parts.append(f"\n- [{s['id']}] {md(s['title'], 256)}{where}")
+    parts.append("\n\n---\n" + VERIFIED_NOTE)
     return {"report": "".join(parts) + "\n", "citations": citations}

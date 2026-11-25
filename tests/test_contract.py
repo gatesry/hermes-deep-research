@@ -8,8 +8,10 @@ from deep_research.contract import (
     ContractError,
     DeadlineExceeded,
     canonical_request,
+    canonical_url,
     domain_allowed,
     normalize_request,
+    url_key,
     parse_args,
 )
 
@@ -193,3 +195,36 @@ class BudgetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UrlCanonicalTests(unittest.TestCase):
+    def test_fragment_tracking_case_and_default_port_removed(self):
+        self.assertEqual(
+            canonical_url("HTTPS://Docs.Example.COM.:443/a/b?id=7&utm_source=x&UTM_Medium=y&gclid=z&fbclid=q#part"),
+            "https://docs.example.com/a/b?id=7")
+
+    def test_meaningful_query_order_and_case_preserved(self):
+        self.assertEqual(canonical_url("https://e.example/p?b=2&A=1"), "https://e.example/p?b=2&A=1")
+        self.assertEqual(canonical_url("https://e.example/Path"), "https://e.example/Path")
+
+    def test_idna_host_and_ip_literals(self):
+        self.assertEqual(canonical_url("https://Bücher.example/x"), "https://xn--bcher-kva.example/x")
+        self.assertEqual(canonical_url("http://[2001:DB8::0001]:80/"), "http://[2001:db8::1]/")
+        self.assertEqual(canonical_url("http://192.0.2.1:8080/x"), "http://192.0.2.1:8080/x")
+
+    def test_unusable_urls_rejected(self):
+        for bad in ["ftp://e.example/x", "https://user:pw@e.example/", "javascript:alert(1)", "https:///nohost",
+                    "https://e%78ample.com/", "not a url", "https://e.example:99999/"]:
+            self.assertIsNone(canonical_url(bad), bad)
+
+    def test_scheme_and_trailing_slash_variants_share_a_key(self):
+        variants = ["http://e.example/doc", "https://e.example/doc/", "https://E.example/doc#x",
+                    "https://e.example/doc?utm_campaign=1"]
+        self.assertEqual(len({url_key(v) for v in variants}), 1)
+        self.assertEqual(url_key("https://e.example"), url_key("https://e.example/"))
+
+    def test_distinct_documents_keep_distinct_keys(self):
+        self.assertNotEqual(url_key("https://e.example/doc"), url_key("https://e.example/doc2"))
+        self.assertNotEqual(url_key("https://e.example/doc?id=1"), url_key("https://e.example/doc?id=2"))
+        self.assertNotEqual(url_key("https://e.example/doc"), url_key("https://e.example:8443/doc"))
+        self.assertNotEqual(url_key("https://e.example/doc"), url_key("https://sub.e.example/doc"))
