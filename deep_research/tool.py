@@ -8,6 +8,7 @@ from typing import Any
 from .contract import (
     ACTIONS,
     CORPUS_MAX_BYTES,
+    EVIDENCE_VIEW_BYTES,
     DEFAULT_BUDGET,
     DEPTH_PRESETS,
     MAX_BUDGET,
@@ -91,6 +92,7 @@ def capabilities() -> dict:
             "budget": {"default": dict(DEFAULT_BUDGET), "maximum": dict(MAX_BUDGET)},
             "depthPresets": {k: dict(v) for k, v in DEPTH_PRESETS.items()},
             "corpusMaxBytes": CORPUS_MAX_BYTES,
+            "evidenceViewBytes": EVIDENCE_VIEW_BYTES,
             "maxJobsPerConversation": MAX_JOBS_PER_CONVERSATION,
             "retentionDays": RETENTION_SECONDS // 86400,
         },

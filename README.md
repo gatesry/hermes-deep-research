@@ -12,7 +12,12 @@ It is a Python port of the portable engine in
 
 1. **Plans** up to four web searches from your question (broad first, then narrow; primary sources preferred).
 2. **Gathers** pages through Hermes' own `web_search` and `web_extract` tools, using whatever search
-   and extraction backends you have configured.
+   and extraction backends you have configured. Each page is kept whole (first 12,000 characters, up
+   to 360,000 bytes per job) and cut into ~900-character windows.
+   Each model call sees at most 60,000 bytes of exact passages: every page's lead window, then the
+   windows that rank best (BM25) against the question, the planned searches and any open gaps. The
+   audit also sees the windows holding each quote it checks. Later rounds therefore keep adding pages
+   instead of stopping once the first few fill the model's view.
 3. **Extracts** atomic findings, each tied to verbatim quotes from the fetched text.
 4. **Checks mechanically**: every quote must appear in its source (at least 20 non-space characters),
    and any derived number (sum, difference, ratio, percent change) must be recomputed from two quoted

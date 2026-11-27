@@ -19,6 +19,7 @@ from typing import Any, Callable, Protocol
 
 from .contract import (
     CORPUS_MAX_BYTES,
+    EVIDENCE_VIEW_BYTES,
     PAGE_MAX_CHARS,
     Budget,
     BudgetExhausted,
@@ -28,6 +29,7 @@ from .contract import (
     url_key,
 )
 from .evidence import collapse, evidence_problem, finding_key, plain, render_report
+from . import passages
 
 MAX_FINDINGS = 12
 MAX_ROUNDS = 3
@@ -41,6 +43,7 @@ LIMITATIONS = [
     "Exact quotes and a fallible model support audit reduce unsupported claims; they do not establish truth or completeness.",
     "Call counts and the deadline are bounded; token totals are observed, not a hard spending cap.",
     "Source filters select accepted evidence; they are not a network firewall.",
+    "Models read ranked passages from each retained page (up to the per-call evidence limit), not whole pages.",
 ]
 
 
@@ -142,6 +145,8 @@ class Engine:
         self.seen_queries: set[str] = set()
         self._charged: set[str] = set()  # each receipt is charged once per execution, live or replayed
         self._corpus_full_noted = False
+        self._spans: dict[str, list[tuple[int, int]]] = {}  # source id -> window slices of its text
+        self.focus: list[str] = [request["question"], request.get("output") or ""]  # ranking query terms
         self._extract_down: str | None = None  # set when web_extract looks broken, not just one page
         self._fetch_ok = 0
         self._fetch_tool_errors = 0
@@ -244,6 +249,7 @@ class Engine:
         if any(s["fingerprint"] == fingerprint for s in self.sources):
             return
         self.corpus_bytes += len(data)
+        self._spans[f"S{len(self.sources) + 1}"] = passages.windows(text)
         source = {"id": f"S{len(self.sources) + 1}", "title": plain(title or url or "Untitled", 256), "text": text,
                   "fingerprint": fingerprint, "extraction": extraction, "retrievedAt": retrieved_at}
         if url:
@@ -292,7 +298,7 @@ class Engine:
     def _note_corpus_full(self) -> None:
         if not self._corpus_full_noted:
             self._corpus_full_noted = True
-            self.gaps.append("Evidence text exceeded the 60,000-byte corpus limit; omitted text remains unassessed.")
+            self.gaps.append(f"Evidence text exceeded the {CORPUS_MAX_BYTES:,}-byte corpus limit; omitted text remains unassessed.")
 
     def _gather(self, urls: list[str]) -> None:
         sources = self.request["sources"]
@@ -377,8 +383,29 @@ class Engine:
     def _prompt(instructions: str, data: Any) -> str:
         return instructions + UNTRUSTED_MARKER + json.dumps(data, ensure_ascii=False)
 
-    def _corpus(self) -> list[dict]:
-        return [{"id": s["id"], "title": s["title"], "url": s.get("url"), "text": s["text"]} for s in self.sources]
+    def _corpus(self, pinned: dict[str, set[int]] | None = None) -> list[dict]:
+        """The model's view: per source, exact passages ranked against the current research focus."""
+        ranked = [{"id": s["id"], "title": s["title"], "text": s["text"], "windows": self._spans[s["id"]]}
+                  for s in self.sources]
+        picked = passages.select(ranked, " ".join(self.focus), EVIDENCE_VIEW_BYTES, pinned)
+        view = []
+        for s in self.sources:
+            if s["id"] in picked:
+                view.append({"id": s["id"], "title": s["title"], "url": s.get("url"),
+                             "passages": passages.merge(s["text"], self._spans[s["id"]], picked[s["id"]])})
+        return view
+
+    def _quote_windows(self, candidates: list[dict]) -> dict[str, set[int]]:
+        """Windows holding each candidate's quotes, so the audit sees the cited text."""
+        by_id = {s["id"]: s for s in self.sources}
+        pinned: dict[str, set[int]] = {}
+        for c in candidates:
+            for e in c.get("evidence") or []:
+                src = by_id.get(e.get("sourceId"))
+                span = passages.locate(e.get("quote") or "", src["text"]) if src else None
+                if span:
+                    pinned.setdefault(src["id"], set()).update(passages.covering(self._spans[src["id"]], *span))
+        return pinned
 
     def _plan(self) -> list[str]:
         req = self.request
@@ -397,7 +424,8 @@ class Engine:
         req = self.request
         prompt = self._prompt(
             "Extract atomic findings from the sources in the data block that answer its question as of its asOf "
-            'date, focused on its output request. Return JSON only: {"findings":[{"statement":"...",'
+            "date, focused on its output request. Each source lists exact passages selected from its page; copy "
+            'every quote from within a single passage. Return JSON only: {"findings":[{"statement":"...",'
             '"evidence":[{"sourceId":"S1","quote":"exact verbatim passage copied from that source"}]}],'
             '"gaps":["unanswered questions or contradictions"],"queries":["targeted follow-up web searches"]}. '
             "At most 12 findings, 8 gaps, 4 queries. Each quote must be copied exactly (at least 20 non-space "
@@ -425,7 +453,7 @@ class Engine:
             "you judge one side stronger; return an empty list only when the sources do not conflict.",
             {"question": self.request["question"], "questions": questions, "asOf": self.request.get("asOf"),
              "findings": [{k: v for k, v in c.items() if k != "support"} for c in candidates],
-             "sources": self._corpus()},
+             "sources": self._corpus(self._quote_windows(candidates))},
         )
         return self._model("audit", prompt, audit=True)
 
@@ -444,6 +472,7 @@ class Engine:
             if req["sources"]["web"]:
                 self.progress("Planning research")
                 questions = self._plan()
+                self.focus += questions
             else:  # nothing to search, so a planning call would be wasted
                 questions = [plain(req["question"], 300)]
             if req["sources"]["urls"]:
@@ -469,6 +498,7 @@ class Engine:
                 # Follow-up queries are written after the model has read the corpus. With supplied
                 # documents that corpus may be private, so only the planned queries are ever searched.
                 queries = [] if req["sources"]["documents"] else _strings(extracted.get("queries"), 4, 300)
+                self.focus += round_gaps + queries  # later rounds rank passages toward what is still missing
                 prior = {finding_key(f["statement"]): f for f in findings}
                 candidates = dict(prior)
                 raw_findings = extracted.get("findings")

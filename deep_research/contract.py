@@ -23,7 +23,10 @@ DEPTH_PRESETS = {
     # more searches, fetches and time rather than unreachable model calls.
     "deep": {"modelCalls": 8, "searches": 12, "fetches": 30, "parallelism": 4, "durationMs": 600_000},
 }
-CORPUS_MAX_BYTES = 60_000
+# Retained page text per job (what quotes are verified against), and the ranked passages from it
+# that each extraction or audit call may see. Pages are kept whole; models see selected windows.
+CORPUS_MAX_BYTES = 360_000
+EVIDENCE_VIEW_BYTES = 60_000
 PAGE_MAX_CHARS = 12_000
 ACTIONS = ("start", "status", "result", "resume", "cancel", "capabilities")
 COUNTERS = ("modelCalls", "searches", "fetches")

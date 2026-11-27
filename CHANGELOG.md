@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Passage selection. Retained page text rises from 60,000 to 360,000 bytes per job; extraction and
+  audit calls see up to 60,000 bytes of exact ~900-character windows chosen by BM25 (each page's lead
+  window first; the audit also gets the windows holding the quotes it checks). In 0.1.0 the first
+  five or so pages filled the corpus, so follow-up rounds never added sources and `deep` behaved like
+  `standard`. Quotes are still verified against the full retained page text.
+
 ## 0.1.0 — 2026-11-25
 
 First release.

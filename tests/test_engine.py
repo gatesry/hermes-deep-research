@@ -2,6 +2,7 @@ import contextvars
 import json
 import time
 import unittest
+from unittest import mock
 
 from deep_research.contract import Budget, normalize_request
 from deep_research.engine import UNTRUSTED_MARKER, Engine
@@ -128,6 +129,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(len(result["findings"]), 1)
 
+    @mock.patch("deep_research.engine.CORPUS_MAX_BYTES", 60_000)  # capacity logic at the v0.1 size
     def test_corpus_capped_at_60000_bytes(self):
         big = "é" * 15_000  # 30,000 UTF-8 bytes each
         docs = [{"title": f"D{i}", "text": big[:-i] if i else big} for i in range(3)]
@@ -297,6 +299,7 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(result["usage"]["reportedTokens"], 100 * real)
         self.assertLessEqual(real, 2)  # plan + one extract; no repeat round
 
+    @mock.patch("deep_research.engine.CORPUS_MAX_BYTES", 60_000)  # capacity logic at the v0.1 size
     def test_fetching_stops_once_the_corpus_is_full(self):
         pages = {f"https://p{i}.example/doc": (f"Page {i}", f"Page {i} fact. " + "x" * 11_990) for i in range(20)}
         io = FakeIO(pages=pages, hits=[])
@@ -373,6 +376,7 @@ class AntigravityFixTests(unittest.TestCase):
         self.assertEqual([s["url"] for s in result["sources"]], ["https://b.example/review"])
         self.assertFalse([g for g in result["gaps"] if g.startswith("Page fetching stopped")])
 
+    @mock.patch("deep_research.engine.CORPUS_MAX_BYTES", 60_000)  # capacity logic at the v0.1 size
     def test_urls_skipped_at_exact_corpus_capacity_are_reported(self):
         pages = {f"https://p{i}.example/doc": (f"Page {i}", f"{i}" + "y" * 11_999) for i in range(6)}
         result, _, _ = run({"question": "q", "sources": {"web": False, "urls": list(pages)},
