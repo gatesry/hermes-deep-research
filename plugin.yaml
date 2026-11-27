@@ -1,5 +1,5 @@
 name: deep-research
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 api_version: 1
 description: "Bounded, source-backed web research as background jobs: exact-quote evidence, checked arithmetic, a separate model audit, and an honest list of gaps."

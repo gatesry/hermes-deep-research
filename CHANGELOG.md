@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-27
 
 - Passage selection. Retained page text rises from 60,000 to 360,000 bytes per job; extraction and
   audit calls see up to 60,000 bytes of exact ~900-character windows chosen by BM25 (each page's lead
